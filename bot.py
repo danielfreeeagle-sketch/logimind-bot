@@ -352,7 +352,6 @@ def get_top_users(limit=10, today=False):
 
 
 def get_top_streaks(limit=10):
-    """ТОП по стрикам."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT user_id, first_name, username, bonus_streak, is_premium, premium_until FROM users WHERE bonus_streak > 0 ORDER BY bonus_streak DESC LIMIT ?", (limit,))
@@ -562,10 +561,6 @@ async def ask_ai_vision(user_id: int, image_base64: str, caption: str = "") -> s
 
 # ============ УТИЛИТЫ ============
 def is_admin(user_id):
-    return user_id == OWNER_ID
-
-
-def is_boss(user_id):
     return user_id == OWNER_ID
 
 
@@ -1072,6 +1067,9 @@ async def cmd_achivements(message: Message):
 @dp.message(Command("reset"))
 async def cmd_reset(message: Message):
     user_histories[message.from_user.id] = []
+    # На всякий случай чистим состояние ожидания подарка
+    if message.from_user.id in pending_states:
+        del pending_states[message.from_user.id]
     await message.answer("🗑 <b>Диалог очищен</b>\n\nНачинаем заново!", reply_markup=get_main_menu(message.from_user.id))
 
 
@@ -1079,7 +1077,9 @@ async def cmd_reset(message: Message):
 async def cmd_cancel(message: Message):
     if message.from_user.id in pending_states:
         del pending_states[message.from_user.id]
-    await message.answer("❌ Отменено.", reply_markup=get_main_menu(message.from_user.id))
+        await message.answer("❌ Отменено.", reply_markup=get_main_menu(message.from_user.id))
+    else:
+        await message.answer("Нечего отменять.", reply_markup=get_main_menu(message.from_user.id))
 
 
 # ============ БОНУС ============
@@ -1184,8 +1184,7 @@ async def cb_gift_start(callback: CallbackQuery):
         "Кому подарить? Отправь:\n"
         "• <b>@username</b> друга (например: <code>@vasya</code>)\n"
         "• или его <b>ID</b> (например: <code>123456789</code>)\n\n"
-        "<i>Если друг ещё не в боте — бот подскажет что делать.</i>\n\n"
-        "Отмена: /cancel"
+        "❌ Отмена: /cancel"
     )
 
 
@@ -1257,14 +1256,15 @@ async def handle_gift_username(message: Message, state: dict) -> bool:
                 f"1. Отправь другу ссылку: <code>t.me/logiMind_HomeworkBot</code>\n"
                 f"2. Пусть он напишет /start\n"
                 f"3. Потом возвращайся и снова подари 🎁\n\n"
-                f"<i>Или отправь ID друга (число), если знаешь.</i>"
+                f"<i>Или отправь ID друга (число).</i>\n"
+                f"<i>Отмена: /cancel</i>"
             )
             return True
     elif text.isdigit():
         target_id = int(text)
         target_user = get_user(target_id)
         if not target_user:
-            await message.answer(f"❌ Юзер с ID <code>{target_id}</code> не найден в боте.")
+            await message.answer(f"❌ Юзер с ID <code>{target_id}</code> не найден.\n\n<i>Отмена: /cancel</i>")
             return True
     if target_id == user_id:
         await message.answer("❌ Нельзя подарить Premium самому себе!")
@@ -1288,6 +1288,9 @@ async def handle_gift_username(message: Message, state: dict) -> bool:
 async def handle_photo(message: Message):
     user = message.from_user
     create_or_update_user(user.id, user.username, user.first_name)
+    # ⚠️ ВАЖНО: фото сбрасывает ожидание подарка
+    if message.from_user.id in pending_states:
+        del pending_states[message.from_user.id]
     if not await check_limit_and_reply(message):
         return
     caption = message.caption or ""
@@ -1320,13 +1323,32 @@ async def handle_text(message: Message):
     create_or_update_user(user.id, user.username, user.first_name)
     text = message.text.strip()
 
+    # Игнорируем команды — их обрабатывают свои хендлеры
     if text.startswith("/"):
         from aiogram.dispatcher.event.bases import SkipHandler
         raise SkipHandler()
 
+    # Кнопки меню ВСЕГДА сбрасывают ожидание подарка
+    menu_buttons = [
+        "🤖 Спросить AI", "🎁 Бонус", "📚 Помощь с ДЗ", "👤 Профиль",
+        "🥇 Топ", "🔥 Стрики", "⭐ Premium", "👑 БОСС-ПАНЕЛЬ", "❓ Помощь"
+    ]
+    if text in menu_buttons:
+        if message.from_user.id in pending_states:
+            del pending_states[message.from_user.id]
+
+    # Проверка ожидания @username для подарка
     if message.from_user.id in pending_states:
         state = pending_states[message.from_user.id]
         if state.get("action") == "gift_waiting_username":
+            # Если это НЕ username и НЕ ID — просто выходим из режима
+            if not (text.startswith("@") or text.isdigit()):
+                del pending_states[message.from_user.id]
+                await message.answer(
+                    "❌ <b>Не похоже на @username или ID.</b>\n\n"
+                    "Отмена. Нажми «⭐ Premium» → «🎁 Подарить другу» чтобы попробовать снова."
+                )
+                return
             handled = await handle_gift_username(message, state)
             if handled:
                 return
@@ -1528,13 +1550,9 @@ def boss_keyboard():
     ])
 
 
-@dp.message(Command("boss"))
-async def cmd_boss(message: Message):
-    if message.from_user.id != OWNER_ID:
-        await message.answer("⛔ <b>Эта команда только для БОССА</b>")
-        return
+def build_boss_panel_text():
     stats = get_stats()
-    text = (
+    return (
         f"👑 <b>БОСС-ПАНЕЛЬ logiMind</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"👥 Юзеров: <b>{stats['total_users']}</b>\n"
@@ -1558,7 +1576,14 @@ async def cmd_boss(message: Message):
         f"/broadcast текст — рассылка\n"
         f"/me — мой ID"
     )
-    await message.answer(text, reply_markup=boss_keyboard())
+
+
+@dp.message(Command("boss"))
+async def cmd_boss(message: Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ <b>Эта команда только для БОССА</b>")
+        return
+    await message.answer(build_boss_panel_text(), reply_markup=boss_keyboard())
 
 
 @dp.callback_query(F.data.startswith("b_"))
@@ -1579,7 +1604,7 @@ async def cb_boss(callback: CallbackQuery):
         await cmd_users(callback.message)
     elif action == "b_stats":
         await callback.answer()
-        await cmd_boss(callback.message)
+        await callback.message.answer(build_boss_panel_text(), reply_markup=boss_keyboard())
     elif action == "b_ach":
         await callback.answer()
         text = "🏆 <b>Все ачивки и ключи:</b>\n\n"
