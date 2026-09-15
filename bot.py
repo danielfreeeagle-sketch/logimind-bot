@@ -23,18 +23,15 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not BOT_TOKEN:
-    print("❌ BOT_TOKEN не найден в .env!")
+    print("❌ BOT_TOKEN не найден!")
     exit(1)
 if not GROQ_API_KEY:
-    print("❌ GROQ_API_KEY не найден в .env!")
+    print("❌ GROQ_API_KEY не найден!")
     exit(1)
 
 OWNER_ID = 7880085486
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
 FREE_DAILY_LIMIT = 30
@@ -174,8 +171,7 @@ def create_or_update_user(user_id, username, first_name):
         if row[1] != today:
             cursor.execute("""
                 UPDATE users SET last_seen = ?, username = ?, first_name = ?,
-                    requests_today = 0, last_reset_date = ?
-                WHERE user_id = ?
+                    requests_today = 0, last_reset_date = ? WHERE user_id = ?
             """, (now, username, first_name, today, user_id))
         else:
             cursor.execute("""
@@ -190,10 +186,7 @@ def check_and_increment_limit(user_id):
     today = date.today().isoformat()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT requests_today, last_reset_date, is_premium, premium_until, bonus_streak
-        FROM users WHERE user_id = ?
-    """, (user_id,))
+    cursor.execute("SELECT requests_today, last_reset_date, is_premium, premium_until, bonus_streak FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     if not row:
         conn.close()
@@ -287,9 +280,7 @@ def add_achievement(user_id, key):
     if key not in ACHIEVEMENTS:
         return False
     user = get_user(user_id)
-    if not user:
-        return False
-    if key in user["achievements"]:
+    if not user or key in user["achievements"]:
         return False
     ach_list = user["achievements"]
     ach_list.append(key)
@@ -309,16 +300,12 @@ def check_achievements(user_id):
     if user["total_requests"] >= 1:
         if add_achievement(user_id, "first_step"):
             new.append("first_step")
-    req_checks = [(10, "requests_10"), (50, "requests_50"), (100, "requests_100"),
-                  (500, "requests_500"), (1000, "requests_1000")]
-    for t, k in req_checks:
+    for t, k in [(10, "requests_10"), (50, "requests_50"), (100, "requests_100"), (500, "requests_500"), (1000, "requests_1000")]:
         if user["total_requests"] >= t:
             if add_achievement(user_id, k):
                 new.append(k)
     streak = user.get("bonus_streak", 0) or 0
-    streak_checks = [(3, "streak_3"), (7, "streak_7"), (20, "streak_20"),
-                     (30, "streak_30"), (100, "streak_100"), (365, "streak_365")]
-    for t, k in streak_checks:
+    for t, k in [(3, "streak_3"), (7, "streak_7"), (20, "streak_20"), (30, "streak_30"), (100, "streak_100"), (365, "streak_365")]:
         if streak >= t:
             if add_achievement(user_id, k):
                 new.append(k)
@@ -346,11 +333,9 @@ def get_stats():
     cursor.execute("SELECT COUNT(*) FROM users WHERE bonus_streak >= 7")
     streak_7 = cursor.fetchone()[0]
     conn.close()
-    return {
-        "total_users": total_users, "premium_users": premium_users,
-        "total_requests": total_requests, "today_requests": today_requests,
-        "active_24h": active_24h, "streak_7": streak_7
-    }
+    return {"total_users": total_users, "premium_users": premium_users,
+            "total_requests": total_requests, "today_requests": today_requests,
+            "active_24h": active_24h, "streak_7": streak_7}
 
 
 def get_top_users(limit=10, today=False):
@@ -358,17 +343,19 @@ def get_top_users(limit=10, today=False):
     cursor = conn.cursor()
     if today:
         today_str = date.today().isoformat()
-        cursor.execute("""
-            SELECT user_id, first_name, username, requests_today, is_premium, premium_until
-            FROM users WHERE last_reset_date = ? AND requests_today > 0
-            ORDER BY requests_today DESC LIMIT ?
-        """, (today_str, limit))
+        cursor.execute("SELECT user_id, first_name, username, requests_today, is_premium, premium_until FROM users WHERE last_reset_date = ? AND requests_today > 0 ORDER BY requests_today DESC LIMIT ?", (today_str, limit))
     else:
-        cursor.execute("""
-            SELECT user_id, first_name, username, total_requests, is_premium, premium_until
-            FROM users WHERE total_requests > 0
-            ORDER BY total_requests DESC LIMIT ?
-        """, (limit,))
+        cursor.execute("SELECT user_id, first_name, username, total_requests, is_premium, premium_until FROM users WHERE total_requests > 0 ORDER BY total_requests DESC LIMIT ?", (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def get_top_streaks(limit=10):
+    """ТОП по стрикам."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, first_name, username, bonus_streak, is_premium, premium_until FROM users WHERE bonus_streak > 0 ORDER BY bonus_streak DESC LIMIT ?", (limit,))
     rows = cursor.fetchall()
     conn.close()
     return rows
@@ -407,10 +394,7 @@ def get_user_rank(user_id, today=False):
 def get_recent_users(limit=20):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT user_id, first_name, username, registered_at, total_requests, is_premium, bonus_streak
-        FROM users ORDER BY registered_at DESC LIMIT ?
-    """, (limit,))
+    cursor.execute("SELECT user_id, first_name, username, registered_at, total_requests, is_premium, bonus_streak FROM users ORDER BY registered_at DESC LIMIT ?", (limit,))
     rows = cursor.fetchall()
     conn.close()
     return rows
@@ -421,15 +405,9 @@ def get_score_needed_for_top(top_n, today=False):
     cursor = conn.cursor()
     if today:
         today_str = date.today().isoformat()
-        cursor.execute("""
-            SELECT requests_today FROM users WHERE last_reset_date = ? AND requests_today > 0
-            ORDER BY requests_today DESC LIMIT 1 OFFSET ?
-        """, (today_str, top_n - 1))
+        cursor.execute("SELECT requests_today FROM users WHERE last_reset_date = ? AND requests_today > 0 ORDER BY requests_today DESC LIMIT 1 OFFSET ?", (today_str, top_n - 1))
     else:
-        cursor.execute("""
-            SELECT total_requests FROM users WHERE total_requests > 0
-            ORDER BY total_requests DESC LIMIT 1 OFFSET ?
-        """, (top_n - 1,))
+        cursor.execute("SELECT total_requests FROM users WHERE total_requests > 0 ORDER BY total_requests DESC LIMIT 1 OFFSET ?", (top_n - 1,))
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else None
@@ -446,10 +424,8 @@ def set_streak_admin(user_id, streak):
 def create_gift(from_user_id, to_user_id, plan_key, price):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO gifts (from_user_id, to_user_id, plan_key, price, created_at)
-        VALUES (?, ?, ?, ?, ?)
-    """, (from_user_id, to_user_id, plan_key, price, datetime.now().isoformat()))
+    cursor.execute("INSERT INTO gifts (from_user_id, to_user_id, plan_key, price, created_at) VALUES (?, ?, ?, ?, ?)",
+                   (from_user_id, to_user_id, plan_key, price, datetime.now().isoformat()))
     conn.commit()
     conn.close()
     plan = PREMIUM_PLANS.get(plan_key)
@@ -506,7 +482,6 @@ SYSTEM_PROMPT = (
     "Ты — logiMind, умный помощник по учёбе. Отвечай понятно, дружелюбно, "
     "на русском или украинском. Если это домашка — объясняй шаги решения."
 )
-
 SYSTEM_PROMPT_VISION = (
     "Ты — logiMind, помощник по учёбе. Пользователь прислал фото задания. "
     "Прочитай текст, пойми задачу и помоги решить. Отвечай на языке задания."
@@ -590,6 +565,10 @@ def is_admin(user_id):
     return user_id == OWNER_ID
 
 
+def is_boss(user_id):
+    return user_id == OWNER_ID
+
+
 def get_premium_icon(is_premium_field, premium_until_field):
     if not is_premium_field or not premium_until_field:
         return ""
@@ -641,12 +620,23 @@ def make_progress_bar(value, maximum, length=10):
 
 
 # ============ МЕНЮ ============
-def get_main_menu():
+def get_main_menu(user_id=None):
+    if user_id == OWNER_ID:
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="🤖 Спросить AI"), KeyboardButton(text="🎁 Бонус")],
+                [KeyboardButton(text="📚 Помощь с ДЗ"), KeyboardButton(text="👤 Профиль")],
+                [KeyboardButton(text="🥇 Топ"), KeyboardButton(text="🔥 Стрики"), KeyboardButton(text="⭐ Premium")],
+                [KeyboardButton(text="👑 БОСС-ПАНЕЛЬ"), KeyboardButton(text="❓ Помощь")]
+            ],
+            resize_keyboard=True,
+            input_field_placeholder="👑 Режим БОССА активен..."
+        )
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🤖 Спросить AI"), KeyboardButton(text="🎁 Бонус")],
             [KeyboardButton(text="📚 Помощь с ДЗ"), KeyboardButton(text="👤 Профиль")],
-            [KeyboardButton(text="🥇 Топ"), KeyboardButton(text="⭐ Premium")],
+            [KeyboardButton(text="🥇 Топ"), KeyboardButton(text="🔥 Стрики"), KeyboardButton(text="⭐ Premium")],
             [KeyboardButton(text="❓ Помощь")]
         ],
         resize_keyboard=True,
@@ -686,13 +676,8 @@ def build_achievements_text(user_id):
     got = user["achievements"]
     total = len(ACHIEVEMENTS)
     got_count = len(got)
-
-    text = f"🏆 <b>ТВОИ АЧИВКИ</b>\n"
-    text += f"Получено: <b>{got_count}/{total}</b>\n\n"
-    text += "━━━━━━━━━━━━━━━━━━━━\n"
-    text += "✅ <b>ПОЛУЧЕНО</b>\n"
-    text += "━━━━━━━━━━━━━━━━━━━━\n\n"
-
+    text = f"🏆 <b>ТВОИ АЧИВКИ</b>\nПолучено: <b>{got_count}/{total}</b>\n\n"
+    text += "━━━━━━━━━━━━━━━━━━━━\n✅ <b>ПОЛУЧЕНО</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
     got_any = False
     for key, ach in ACHIEVEMENTS.items():
         if key in got:
@@ -700,18 +685,14 @@ def build_achievements_text(user_id):
             got_any = True
     if not got_any:
         text += "<i>Пока ничего. Сделай первый запрос!</i>\n\n"
-
     locked = [k for k in ACHIEVEMENTS if k not in got]
     if locked:
-        text += "━━━━━━━━━━━━━━━━━━━━\n"
-        text += "🔒 <b>ЗАБЛОКИРОВАНО</b>\n"
-        text += "━━━━━━━━━━━━━━━━━━━━\n\n"
+        text += "━━━━━━━━━━━━━━━━━━━━\n🔒 <b>ЗАБЛОКИРОВАНО</b>\n━━━━━━━━━━━━━━━━━━━━\n\n"
         for key in locked[:10]:
             ach = ACHIEVEMENTS[key]
             text += f"🔒 <b>{ach['name']}</b>\n<i>{ach['desc']}</i>\n\n"
         if len(locked) > 10:
             text += f"<i>...и ещё {len(locked) - 10} ачивок</i>"
-
     return text
 
 
@@ -740,7 +721,6 @@ def build_top_text(today=False):
         header = "🏆 <b>ТОП-10 ЮЗЕРОВ</b>\n📊 За всё время\n\n"
     if not rows:
         return header + "<i>Пока никого нет. Будь первым! 🚀</i>"
-
     text = header
     for i, (uid, first_name, username, score, is_prem, until) in enumerate(rows, 1):
         medal = medals[i-1] if i <= 3 else f"{i}."
@@ -754,6 +734,30 @@ def build_top_text(today=False):
     return text
 
 
+def build_streaks_text():
+    rows = get_top_streaks(limit=10)
+    medals = ["🥇", "🥈", "🥉"]
+    header = "🔥 <b>ТОП-10 ПО СТРИКАМ</b>\n💎 Кто дольше всех заходит подряд\n\n"
+    if not rows:
+        return header + "<i>Пока ни у кого нет стрика. Заходи каждый день — и будешь первым! 🚀</i>"
+    text = header
+    for i, (uid, first_name, username, streak, is_prem, until) in enumerate(rows, 1):
+        medal = medals[i-1] if i <= 3 else f"{i}."
+        name = first_name or "Аноним"
+        prem_icon = get_premium_icon(is_prem, until)
+        fire = streak_fire(streak)
+        text += f"{medal} <b>{name}</b>{prem_icon} — {streak} дней{fire}\n"
+    text += "\n<i>Заходи каждый день — и поднимайся в топ! 🔥</i>"
+    return text
+
+
+def get_streaks_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Топ запросов", callback_data="top_all_time")],
+        [InlineKeyboardButton(text="👤 Моё место в стриках", callback_data="my_streak")],
+    ])
+
+
 def get_top_keyboard(today=False):
     if today:
         toggle_text, toggle_cb, my_cb = "📊 За всё время", "top_all_time", "my_rank_today"
@@ -761,10 +765,12 @@ def get_top_keyboard(today=False):
         toggle_text, toggle_cb, my_cb = "🔥 Топ за сегодня", "top_today", "my_rank_all"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📍 Моё место", callback_data=my_cb),
-         InlineKeyboardButton(text=toggle_text, callback_data=toggle_cb)]
+         InlineKeyboardButton(text=toggle_text, callback_data=toggle_cb)],
+        [InlineKeyboardButton(text="🔥 Топ по стрикам", callback_data="top_streaks")],
     ])
 
 
+# ============ КОМАНДЫ ТОПА ============
 @dp.message(Command("top"))
 async def cmd_top(message: Message):
     create_or_update_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
@@ -777,6 +783,13 @@ async def cmd_top_today(message: Message):
     create_or_update_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     text = build_top_text(today=True)
     await message.answer(text, reply_markup=get_top_keyboard(today=True))
+
+
+@dp.message(Command("top_streaks"))
+async def cmd_top_streaks(message: Message):
+    create_or_update_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
+    text = build_streaks_text()
+    await message.answer(text, reply_markup=get_streaks_keyboard())
 
 
 @dp.callback_query(F.data == "top_today")
@@ -799,6 +812,36 @@ async def cb_top_all(callback: CallbackQuery):
     await callback.answer()
 
 
+@dp.callback_query(F.data == "top_streaks")
+async def cb_top_streaks(callback: CallbackQuery):
+    text = build_streaks_text()
+    try:
+        await callback.message.edit_text(text, reply_markup=get_streaks_keyboard())
+    except Exception:
+        await callback.message.answer(text, reply_markup=get_streaks_keyboard())
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "my_streak")
+async def cb_my_streak(callback: CallbackQuery):
+    u = get_user(callback.from_user.id)
+    if not u:
+        await callback.answer("Сначала напиши /start", show_alert=True)
+        return
+    streak = u.get("bonus_streak", 0) or 0
+    fire = streak_fire(streak)
+    if streak == 0:
+        msg = "🔥 <b>У тебя ещё нет стрика</b>\n\nНачни заходить каждый день и получишь бонус!"
+    else:
+        msg = (
+            f"🔥 <b>Твой стрик:</b> {streak} дней{fire}\n\n"
+            f"📊 Бонус к лимиту: <b>+{min(streak, MAX_BONUS_DAYS)}</b>\n"
+            f"🎯 Твой лимит сегодня: <b>{get_effective_limit(u)}</b> запросов"
+        )
+    await callback.answer()
+    await callback.message.answer(msg)
+
+
 @dp.callback_query(F.data == "my_rank_all")
 async def cb_my_rank_all(callback: CallbackQuery):
     data = get_user_rank(callback.from_user.id, today=False)
@@ -816,12 +859,6 @@ async def cb_my_rank_all(callback: CallbackQuery):
             need = s - data['score'] + 1
             if need > 0:
                 text += f"До ТОП-10 осталось: <b>{need}</b> зап.\n"
-    if data['rank'] > 100:
-        s = get_score_needed_for_top(100, today=False)
-        if s:
-            need = s - data['score'] + 1
-            if need > 0:
-                text += f"До ТОП-100 осталось: <b>{need}</b> зап.\n"
     text += "\n<i>Спрашивай больше — и попадёшь в топ! 🚀</i>"
     await callback.answer()
     await callback.message.answer(text)
@@ -849,21 +886,30 @@ async def cmd_start(message: Message):
     user = message.from_user
     create_or_update_user(user.id, user.username, user.first_name)
     user_name = user.first_name or "друг"
-    text = (
-        f"👋 Привет, <b>{user_name}</b>!\n\n"
-        f"🧠 Я <b>logiMind</b> — твой умный помощник по учёбе.\n\n"
-        f"Что я умею:\n"
-        f"📚 Помогаю разбирать домашние задания\n"
-        f"📷 Читаю задания с фотографий\n"
-        f"📝 Объясняю сложные темы простыми словами\n"
-        f"💬 Отвечаю на любые вопросы\n\n"
-        f"🎁 Бесплатно: <b>{FREE_DAILY_LIMIT} запросов в день</b>\n"
-        f"🎁 Ежедневный бонус: <b>+1 к лимиту за день подряд</b>\n"
-        f"🏆 Ачивки за достижения\n"
-        f"⭐ Premium: <b>безлимит</b>\n\n"
-        f"<b>Напиши вопрос или пришли фото задания 👇</b>"
-    )
-    await message.answer(text, reply_markup=get_main_menu())
+    if user.id == OWNER_ID:
+        text = (
+            f"👑 <b>С возвращением, БОСС {user_name}!</b>\n\n"
+            f"🧠 <b>logiMind</b> к твоим услугам.\n\n"
+            f"Все системы работают. Бот — твой раб.\n\n"
+            f"<b>БОСС-ПАНЕЛЬ доступна в меню 👇</b>\n"
+            f"Или команда: <code>/boss</code>"
+        )
+    else:
+        text = (
+            f"👋 Привет, <b>{user_name}</b>!\n\n"
+            f"🧠 Я <b>logiMind</b> — твой умный помощник по учёбе.\n\n"
+            f"Что я умею:\n"
+            f"📚 Помогаю разбирать домашние задания\n"
+            f"📷 Читаю задания с фотографий\n"
+            f"📝 Объясняю сложные темы простыми словами\n"
+            f"💬 Отвечаю на любые вопросы\n\n"
+            f"🎁 Бесплатно: <b>{FREE_DAILY_LIMIT} запросов в день</b>\n"
+            f"🎁 Ежедневный бонус: <b>+1 к лимиту за день подряд</b>\n"
+            f"🏆 Ачивки за достижения\n"
+            f"⭐ Premium: <b>безлимит</b>\n\n"
+            f"<b>Напиши вопрос или пришли фото задания 👇</b>"
+        )
+    await message.answer(text, reply_markup=get_main_menu(user.id))
 
 
 # ============ /help ============
@@ -885,6 +931,7 @@ async def cmd_help(message: Message):
         "/premium — купить Premium ⭐\n"
         "/top — топ юзеров 🏆\n"
         "/top_today — топ за сегодня 🔥\n"
+        "/top_streaks — топ по стрикам 🔥🔥\n"
         "/reset — сбросить диалог\n"
         "/cancel — отменить действие\n\n"
         f"<b>Лимит:</b> {FREE_DAILY_LIMIT} базовых + бонус за стрик (до +{MAX_BONUS_DAYS})"
@@ -896,13 +943,24 @@ async def cmd_help(message: Message):
 @dp.message(Command("premium"))
 async def cmd_premium(message: Message):
     user = get_user(message.from_user.id)
+
     if user and is_premium_active(user):
         until = datetime.fromisoformat(user["premium_until"])
         if until.year >= 2100:
-            await message.answer("⭐ <b>У тебя Premium навсегда!</b>\n\nСпасибо за поддержку 🚀")
+            status_text = "⭐ <b>У тебя Premium навсегда!</b>\n\nСпасибо за поддержку 🚀"
         else:
-            await message.answer(f"⭐ <b>У тебя Premium активен</b>\n\nДействует до: <b>{until.strftime('%d.%m.%Y')}</b>")
+            status_text = (
+                f"⭐ <b>У тебя Premium активен</b>\n\n"
+                f"Действует до: <b>{until.strftime('%d.%m.%Y')}</b>\n\n"
+                f"Что можно сделать:"
+            )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎁 Подарить Premium другу", callback_data="gift_start")],
+            [InlineKeyboardButton(text="⭐ Продлить свой Premium", callback_data="show_buy_menu")],
+        ])
+        await message.answer(status_text, reply_markup=kb)
         return
+
     text = (
         "⭐ <b>logiMind Premium</b>\n\n"
         "<b>Что даёт Premium:</b>\n"
@@ -916,6 +974,17 @@ async def cmd_premium(message: Message):
     await message.answer(text, reply_markup=get_premium_keyboard())
 
 
+@dp.callback_query(F.data == "show_buy_menu")
+async def show_buy_menu_cb(callback: CallbackQuery):
+    text = (
+        "⭐ <b>Продление Premium</b>\n\n"
+        "Выбери тариф — он <b>прибавится</b> к твоему текущему Premium.\n\n"
+        "<b>Выбери 👇</b>"
+    )
+    await callback.answer()
+    await callback.message.answer(text, reply_markup=get_premium_keyboard())
+
+
 # ============ /profile ============
 @dp.message(Command("profile"))
 async def cmd_profile(message: Message):
@@ -924,14 +993,12 @@ async def cmd_profile(message: Message):
     if not user:
         await message.answer("Нажми /start сначала.")
         return
-
     premium_active = is_premium_active(user)
     premium_badge = " ⭐" if premium_active else ""
     rank_data = get_user_rank(user_id, today=False)
     ach_label = ""
     if rank_data and rank_data['total'] > 0 and user['total_requests'] > 0:
         ach_label = get_achievement_label(rank_data['rank'], rank_data['total'])
-
     if premium_active:
         until = datetime.fromisoformat(user["premium_until"])
         limit_block = "⭐ <b>Premium навсегда</b> 🎉" if until.year >= 2100 else f"⭐ <b>Premium</b> до {until.strftime('%d.%m.%Y')} 🎉"
@@ -953,11 +1020,9 @@ async def cmd_profile(message: Message):
             limit_block += f"⚠️ <b>Осталось: {remaining}</b>"
         else:
             limit_block += f"✅ <b>Осталось: {remaining}</b>"
-
     ach_count = len(user["achievements"])
     ach_total = len(ACHIEVEMENTS)
     gifts_count = count_gifts_from(user_id)
-
     text = (
         f"👤 <b>Твой профиль</b>{premium_badge}\n\n"
         f"ID: <code>{user_id}</code>\n"
@@ -966,10 +1031,7 @@ async def cmd_profile(message: Message):
     )
     if ach_label:
         text += f"{ach_label}\n"
-    text += (
-        f"\n{limit_block}\n\n"
-        f"🏆 Ачивки: <b>{ach_count}/{ach_total}</b>\n"
-    )
+    text += f"\n{limit_block}\n\n🏆 Ачивки: <b>{ach_count}/{ach_total}</b>\n"
     if gifts_count > 0:
         text += f"🎁 Подарено Premium: <b>{gifts_count}</b>\n"
     text += (
@@ -977,7 +1039,6 @@ async def cmd_profile(message: Message):
         f"• Всего запросов: {user['total_requests']}\n"
         f"• С нами с: {user['registered_at'][:10]}"
     )
-
     buttons = []
     if not premium_active:
         buttons.append([InlineKeyboardButton(text="🎁 Получить бонус", callback_data="claim_bonus")])
@@ -985,7 +1046,7 @@ async def cmd_profile(message: Message):
         buttons.append([InlineKeyboardButton(text="⭐ Купить Premium", callback_data="show_premium")])
     else:
         buttons.append([InlineKeyboardButton(text="🏆 Мои ачивки", callback_data="show_ach")])
-
+        buttons.append([InlineKeyboardButton(text="🎁 Подарить Premium", callback_data="gift_start")])
     await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
@@ -1002,26 +1063,23 @@ async def show_ach_cb(callback: CallbackQuery):
     await callback.message.answer(text)
 
 
-# ============ /achivements ============
 @dp.message(Command("achivements"))
 async def cmd_achivements(message: Message):
     text = build_achievements_text(message.from_user.id)
     await message.answer(text)
 
 
-# ============ /reset ============
 @dp.message(Command("reset"))
 async def cmd_reset(message: Message):
     user_histories[message.from_user.id] = []
-    await message.answer("🗑 <b>Диалог очищен</b>\n\nНачинаем заново!", reply_markup=get_main_menu())
+    await message.answer("🗑 <b>Диалог очищен</b>\n\nНачинаем заново!", reply_markup=get_main_menu(message.from_user.id))
 
 
-# ============ /cancel ============
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: Message):
     if message.from_user.id in pending_states:
         del pending_states[message.from_user.id]
-    await message.answer("❌ Отменено.", reply_markup=get_main_menu())
+    await message.answer("❌ Отменено.", reply_markup=get_main_menu(message.from_user.id))
 
 
 # ============ БОНУС ============
@@ -1034,7 +1092,6 @@ async def send_bonus_message(target, user_id, is_callback=False):
         else:
             await target.answer(msg)
         return
-
     if is_premium_active(user):
         msg = "⭐ У тебя Premium — безлимит! 🎉"
         if is_callback:
@@ -1042,9 +1099,7 @@ async def send_bonus_message(target, user_id, is_callback=False):
         else:
             await target.answer(msg)
         return
-
     success, status, streak = claim_daily_bonus(user_id)
-
     if not success:
         if status == "already":
             user = get_user(user_id)
@@ -1062,7 +1117,6 @@ async def send_bonus_message(target, user_id, is_callback=False):
         else:
             await target.answer(msg)
         return
-
     user = get_user(user_id)
     new_limit = get_effective_limit(user)
     fire = streak_fire(streak)
@@ -1075,12 +1129,10 @@ async def send_bonus_message(target, user_id, is_callback=False):
         msg += "<i>Завтра зайдёшь — ещё +1 к лимиту!</i>"
     else:
         msg += f"<i>🏆 Стрик продолжает расти, но бонус максимум +{MAX_BONUS_DAYS}!</i>"
-
     new_ach = []
     if add_achievement(user_id, "first_bonus"):
         new_ach.append("first_bonus")
     new_ach += check_achievements(user_id)
-
     if is_callback:
         await target.answer("Бонус получен! 🎁", show_alert=False)
         await target.message.answer(msg)
@@ -1121,7 +1173,7 @@ async def check_limit_and_reply(message: Message) -> bool:
     return True
 
 
-# ============ ПОДАРКИ: обработчики ============
+# ============ ПОДАРКИ ============
 @dp.callback_query(F.data == "gift_start")
 async def cb_gift_start(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -1155,31 +1207,25 @@ async def cb_gift_buy(callback: CallbackQuery):
     if not state or state.get("action") != "gift_select_plan":
         await callback.answer("Сессия истекла. Начни заново.", show_alert=True)
         return
-
     plan_key = callback.data.replace("giftbuy_", "")
     plan = PREMIUM_PLANS.get(plan_key)
     if not plan:
         await callback.answer("Ошибка тарифа", show_alert=True)
         return
-
     to_user_id = state.get("to_user_id")
     if not to_user_id:
         await callback.answer("Ошибка получателя", show_alert=True)
         return
-
     await callback.answer()
-
     target = get_user(to_user_id)
     if not target:
         await callback.message.answer("❌ Получатель не найден.")
         del pending_states[user_id]
         return
-
     if to_user_id == user_id:
         await callback.message.answer("❌ Нельзя подарить Premium самому себе!")
         del pending_states[user_id]
         return
-
     try:
         await bot.send_invoice(
             chat_id=user_id,
@@ -1200,9 +1246,7 @@ async def cb_gift_buy(callback: CallbackQuery):
 async def handle_gift_username(message: Message, state: dict) -> bool:
     user_id = message.from_user.id
     text = message.text.strip()
-
     target_id = None
-
     if text.startswith("@") or not text.isdigit():
         username = text.lstrip("@").lower()
         target_id = find_user_by_username(username)
@@ -1220,32 +1264,20 @@ async def handle_gift_username(message: Message, state: dict) -> bool:
         target_id = int(text)
         target_user = get_user(target_id)
         if not target_user:
-            await message.answer(
-                f"❌ Юзер с ID <code>{target_id}</code> не найден в боте.\n\n"
-                f"<i>Проверь ID или предложи другу зайти в бота.</i>"
-            )
+            await message.answer(f"❌ Юзер с ID <code>{target_id}</code> не найден в боте.")
             return True
-
     if target_id == user_id:
         await message.answer("❌ Нельзя подарить Premium самому себе!")
         del pending_states[user_id]
         return True
-
     target_user = get_user(target_id)
     if not target_user:
         await message.answer("❌ Получатель не найден.")
         del pending_states[user_id]
         return True
-
-    pending_states[user_id] = {
-        "action": "gift_select_plan",
-        "to_user_id": target_id
-    }
-
+    pending_states[user_id] = {"action": "gift_select_plan", "to_user_id": target_id}
     await message.answer(
-        f"🎁 <b>Подарок для:</b> {target_user['first_name']} "
-        f"(@{target_user['username'] or 'нет'})\n\n"
-        f"<b>Выбери тариф 👇</b>",
+        f"🎁 <b>Подарок для:</b> {target_user['first_name']} (@{target_user['username'] or 'нет'})\n\n<b>Выбери тариф 👇</b>",
         reply_markup=get_gift_plans_keyboard()
     )
     return True
@@ -1271,7 +1303,6 @@ async def handle_photo(message: Message):
         else:
             for i in range(0, len(answer), 4000):
                 await message.answer(answer[i:i+4000])
-
         new_ach = []
         if add_achievement(user.id, "first_photo"):
             new_ach.append("first_photo")
@@ -1289,7 +1320,6 @@ async def handle_text(message: Message):
     create_or_update_user(user.id, user.username, user.first_name)
     text = message.text.strip()
 
-    # ⚠️ ВАЖНО: Игнорируем команды — их обрабатывают свои хендлеры
     if text.startswith("/"):
         from aiogram.dispatcher.event.bases import SkipHandler
         raise SkipHandler()
@@ -1316,8 +1346,14 @@ async def handle_text(message: Message):
     elif text == "🥇 Топ":
         await cmd_top(message)
         return
+    elif text == "🔥 Стрики":
+        await cmd_top_streaks(message)
+        return
     elif text == "⭐ Premium":
         await cmd_premium(message)
+        return
+    elif text == "👑 БОСС-ПАНЕЛЬ":
+        await cmd_boss(message)
         return
     elif text == "❓ Помощь":
         await cmd_help(message)
@@ -1330,18 +1366,15 @@ async def handle_text(message: Message):
         return
     if not await check_limit_and_reply(message):
         return
-
     user_data = get_user(user.id)
     is_prem = is_premium_active(user_data) if user_data else False
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
     answer = await ask_ai(user.id, text, is_prem)
-
     if len(answer) <= 4000:
         await message.answer(answer)
     else:
         for i in range(0, len(answer), 4000):
             await message.answer(answer[i:i+4000])
-
     new_ach = check_achievements(user.id)
     await notify_new_achievements(message, new_ach)
 
@@ -1382,7 +1415,6 @@ async def on_payment(message: Message):
     payment = message.successful_payment
     payload = payment.invoice_payload
 
-    # ============ ПОДАРОК ============
     if payload.startswith("gift_"):
         parts = payload.split("_")
         if len(parts) < 3:
@@ -1398,16 +1430,13 @@ async def on_payment(message: Message):
         if not plan:
             await message.answer("⚠️ Ошибка тарифа.")
             return
-
         ok, until = create_gift(user.id, to_user_id, plan_key, plan["price"])
         if not ok:
             await message.answer("⚠️ Не удалось активировать подарок.")
             return
-
         target = get_user(to_user_id)
         target_name = target["first_name"] if target else "друг"
         until_text = "навсегда" if plan["days"] >= 36500 else f"до {until.strftime('%d.%m.%Y')}"
-
         await message.answer(
             f"🎉 <b>Подарок отправлен!</b>\n\n"
             f"👤 Получатель: <b>{target_name}</b>\n"
@@ -1415,7 +1444,6 @@ async def on_payment(message: Message):
             f"📅 Premium активен {until_text}\n\n"
             f"Спасибо за щедрость! 💝"
         )
-
         try:
             await bot.send_message(
                 to_user_id,
@@ -1427,7 +1455,6 @@ async def on_payment(message: Message):
             )
         except Exception as e:
             logger.error(f"Не уведомил получателя: {e}")
-
         try:
             await bot.send_message(
                 OWNER_ID,
@@ -1439,7 +1466,6 @@ async def on_payment(message: Message):
             )
         except Exception:
             pass
-
         new_ach = check_gift_achievements(user.id)
         for key in new_ach:
             ach = ACHIEVEMENTS.get(key)
@@ -1451,7 +1477,6 @@ async def on_payment(message: Message):
                 )
         return
 
-    # ============ ОБЫЧНАЯ ПОКУПКА ============
     plan_key = payload.replace("premium_", "")
     plan = PREMIUM_PLANS.get(plan_key)
     if not plan:
@@ -1486,42 +1511,45 @@ async def on_payment(message: Message):
 
 
 # ============================================================
-# ============ АДМИН-КОМАНДЫ (ТОЛЬКО ДЛЯ ТЕБЯ) ============
+# ============ 👑 БОСС-ПАНЕЛЬ (ТОЛЬКО ДЛЯ ТЕБЯ) ============
 # ============================================================
 
-def admin_keyboard():
+def boss_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👥 Юзеры", callback_data="a_users"),
-         InlineKeyboardButton(text="📊 Стата", callback_data="a_stats")],
-        [InlineKeyboardButton(text="⭐ Premium", callback_data="a_premium"),
-         InlineKeyboardButton(text="🔥 Стрики", callback_data="a_streaks")],
-        [InlineKeyboardButton(text="🎁 Бонус", callback_data="a_bonus"),
-         InlineKeyboardButton(text="📢 Рассылка", callback_data="a_broadcast")],
-        [InlineKeyboardButton(text="🏆 Ачивки", callback_data="a_ach"),
-         InlineKeyboardButton(text="❌ Закрыть", callback_data="a_close")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="b_stats"),
+         InlineKeyboardButton(text="👥 Юзеры", callback_data="b_users")],
+        [InlineKeyboardButton(text="⭐ Premium", callback_data="b_premium"),
+         InlineKeyboardButton(text="🔥 Стрики", callback_data="b_streaks")],
+        [InlineKeyboardButton(text="🎁 Бонус", callback_data="b_bonus"),
+         InlineKeyboardButton(text="📢 Рассылка", callback_data="b_broadcast")],
+        [InlineKeyboardButton(text="🏆 Ачивки", callback_data="b_ach"),
+         InlineKeyboardButton(text="💎 Топ юзеров", callback_data="b_top")],
+        [InlineKeyboardButton(text="❌ Закрыть", callback_data="b_close")],
     ])
 
 
 @dp.message(Command("boss"))
-async def cmd_admin(message: Message):
-    if not is_admin(message.from_user.id):
-        await message.answer("⛔ <b>Нет доступа</b>")
+async def cmd_boss(message: Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ <b>Эта команда только для БОССА</b>")
         return
     stats = get_stats()
     text = (
-        f"🛠 <b>БОГ-АДМИНКА logiMind</b>\n\n"
+        f"👑 <b>БОСС-ПАНЕЛЬ logiMind</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"👥 Юзеров: <b>{stats['total_users']}</b>\n"
         f"⭐ Premium: <b>{stats['premium_users']}</b>\n"
         f"🔥 Активных 24ч: <b>{stats['active_24h']}</b>\n"
         f"🔥 Со стриком 7+: <b>{stats['streak_7']}</b>\n\n"
-        f"📊 Сегодня: <b>{stats['today_requests']}</b>\n"
-        f"📈 Всего: <b>{stats['total_requests']}</b>\n\n"
+        f"📊 Запросов сегодня: <b>{stats['today_requests']}</b>\n"
+        f"📈 Запросов всего: <b>{stats['total_requests']}</b>\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>Команды:</b>\n"
         f"/users — список юзеров\n"
         f"/user 123 — инфо о юзере\n"
         f"/give_premium 123 30 — выдать Premium\n"
         f"/take_premium 123 — забрать Premium\n"
-        f"/give_streak 123 50 — выдать стрик\n"
+        f"/give_streak 123 50 — установить стрик\n"
         f"/take_streak 123 — обнулить стрик\n"
         f"/give_ach 123 key — выдать ачивку\n"
         f"/take_ach 123 key — забрать ачивку\n"
@@ -1530,71 +1558,73 @@ async def cmd_admin(message: Message):
         f"/broadcast текст — рассылка\n"
         f"/me — мой ID"
     )
-    await message.answer(text, reply_markup=admin_keyboard())
+    await message.answer(text, reply_markup=boss_keyboard())
 
 
-@dp.callback_query(F.data.startswith("a_"))
-async def cb_admin(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+@dp.callback_query(F.data.startswith("b_"))
+async def cb_boss(callback: CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
         await callback.answer("Нет доступа", show_alert=True)
         return
     action = callback.data
-    if action == "a_close":
+    if action == "b_close":
         try:
             await callback.message.delete()
         except Exception:
             pass
         await callback.answer()
         return
-    if action == "a_users":
+    if action == "b_users":
         await callback.answer()
         await cmd_users(callback.message)
-    elif action == "a_stats":
+    elif action == "b_stats":
         await callback.answer()
-        await cmd_admin(callback.message)
-    elif action == "a_ach":
+        await cmd_boss(callback.message)
+    elif action == "b_ach":
         await callback.answer()
-        text = "🏆 <b>Ачивки и ключи:</b>\n\n"
+        text = "🏆 <b>Все ачивки и ключи:</b>\n\n"
         for key, ach in ACHIEVEMENTS.items():
             text += f"{ach['icon']} <code>{key}</code> — {ach['name']}\n"
-        text += "\n<b>Выдать:</b> /give_ach 123 first_step"
-        text += "\n<b>Забрать:</b> /take_ach 123 first_step"
+        text += "\n<b>Выдать:</b> /give_ach 123 first_step\n<b>Забрать:</b> /take_ach 123 first_step"
         await callback.message.answer(text)
-    elif action == "a_premium":
+    elif action == "b_premium":
         await callback.answer()
         await callback.message.answer(
-            "⭐ <b>Premium</b>\n\n"
+            "⭐ <b>Управление Premium</b>\n\n"
             "/give_premium &lt;user_id&gt; &lt;days&gt;\n"
             "/take_premium &lt;user_id&gt;\n\n"
             "Пример: <code>/give_premium 123456 30</code>"
         )
-    elif action == "a_streaks":
+    elif action == "b_streaks":
         await callback.answer()
         await callback.message.answer(
-            "🔥 <b>Стрики</b>\n\n"
+            "🔥 <b>Управление стриками</b>\n\n"
             "/give_streak &lt;user_id&gt; &lt;value&gt;\n"
             "/take_streak &lt;user_id&gt;\n\n"
             "Пример: <code>/give_streak 123456 50</code>"
         )
-    elif action == "a_bonus":
+    elif action == "b_bonus":
         await callback.answer()
         await callback.message.answer(
             "🎁 <b>Бонус</b>\n\n"
             "/reset_bonus &lt;user_id&gt; — юзер сможет взять бонус заново\n\n"
             "Пример: <code>/reset_bonus 123456</code>"
         )
-    elif action == "a_broadcast":
+    elif action == "b_broadcast":
         await callback.answer()
         await callback.message.answer(
             "📢 <b>Рассылка</b>\n\n"
             "/broadcast &lt;текст&gt;\n\n"
             "Пример: <code>/broadcast Привет всем!</code>"
         )
+    elif action == "b_top":
+        await callback.answer()
+        await cmd_top(callback.message)
 
 
 @dp.message(Command("users"))
 async def cmd_users(message: Message):
-    if not is_admin(message.from_user.id):
+    if message.from_user.id != OWNER_ID:
         await message.answer("⛔ Нет доступа.")
         return
     rows = get_recent_users(limit=20)
@@ -1612,7 +1642,7 @@ async def cmd_users(message: Message):
 
 @dp.message(Command("user"))
 async def cmd_user(message: Message):
-    if not is_admin(message.from_user.id):
+    if message.from_user.id != OWNER_ID:
         await message.answer("⛔ Нет доступа.")
         return
     args = message.text.split()
@@ -1654,7 +1684,7 @@ async def cmd_user(message: Message):
 
 @dp.message(Command("give_premium"))
 async def cmd_give_premium(message: Message):
-    if not is_admin(message.from_user.id):
+    if message.from_user.id != OWNER_ID:
         await message.answer("⛔ Нет доступа.")
         return
     args = message.text.split()
@@ -1681,7 +1711,7 @@ async def cmd_give_premium(message: Message):
 
 @dp.message(Command("take_premium"))
 async def cmd_take_premium(message: Message):
-    if not is_admin(message.from_user.id):
+    if message.from_user.id != OWNER_ID:
         await message.answer("⛔ Нет доступа.")
         return
     args = message.text.split()
@@ -1699,7 +1729,7 @@ async def cmd_take_premium(message: Message):
 
 @dp.message(Command("give_streak"))
 async def cmd_give_streak(message: Message):
-    if not is_admin(message.from_user.id):
+    if message.from_user.id != OWNER_ID:
         await message.answer("⛔ Нет доступа.")
         return
     args = message.text.split()
@@ -1722,7 +1752,7 @@ async def cmd_give_streak(message: Message):
 
 @dp.message(Command("take_streak"))
 async def cmd_take_streak(message: Message):
-    if not is_admin(message.from_user.id):
+    if message.from_user.id != OWNER_ID:
         await message.answer("⛔ Нет доступа.")
         return
     args = message.text.split()
@@ -1740,7 +1770,7 @@ async def cmd_take_streak(message: Message):
 
 @dp.message(Command("give_ach"))
 async def cmd_give_ach(message: Message):
-    if not is_admin(message.from_user.id):
+    if message.from_user.id != OWNER_ID:
         await message.answer("⛔ Нет доступа.")
         return
     args = message.text.split()
@@ -1769,7 +1799,7 @@ async def cmd_give_ach(message: Message):
 
 @dp.message(Command("take_ach"))
 async def cmd_take_ach(message: Message):
-    if not is_admin(message.from_user.id):
+    if message.from_user.id != OWNER_ID:
         await message.answer("⛔ Нет доступа.")
         return
     args = message.text.split()
@@ -1800,7 +1830,7 @@ async def cmd_take_ach(message: Message):
 
 @dp.message(Command("reset_limit"))
 async def cmd_reset_limit(message: Message):
-    if not is_admin(message.from_user.id):
+    if message.from_user.id != OWNER_ID:
         await message.answer("⛔ Нет доступа.")
         return
     args = message.text.split()
@@ -1822,7 +1852,7 @@ async def cmd_reset_limit(message: Message):
 
 @dp.message(Command("reset_bonus"))
 async def cmd_reset_bonus(message: Message):
-    if not is_admin(message.from_user.id):
+    if message.from_user.id != OWNER_ID:
         await message.answer("⛔ Нет доступа.")
         return
     args = message.text.split()
@@ -1844,7 +1874,7 @@ async def cmd_reset_bonus(message: Message):
 
 @dp.message(Command("broadcast"))
 async def cmd_broadcast(message: Message):
-    if not is_admin(message.from_user.id):
+    if message.from_user.id != OWNER_ID:
         await message.answer("⛔ Нет доступа.")
         return
     text = message.text.replace("/broadcast", "", 1).strip()
@@ -1877,8 +1907,8 @@ async def cmd_me(message: Message):
 # ============ ЗАПУСК ============
 async def main():
     print("=" * 60)
-    print("🚀 logiMind запускается...")
-    print("🎯 AI + Фото + Premium + Подарки + Ачивки + Админка")
+    print("🚀 logiMind БОСС-ВЕРСИЯ запускается...")
+    print("🎯 AI + Фото + Premium + Подарки + Ачивки + Стрики + БОСС-ПАНЕЛЬ")
     print("=" * 60)
     init_db()
     logger.info("Бот стартовал")
