@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 FREE_DAILY_LIMIT = 30
 MAX_BONUS_DAYS = 20
 
+# Реферальная система
+REFERRAL_BONUS_OWNER = 5    # +5 запросов пригласившему
+REFERRAL_BONUS_FRIEND = 3   # +3 запросов приглашённому
+
 PREMIUM_PLANS = {
     "1week":   {"title": "⭐ Premium на 1 неделю",   "price": 25,  "days": 7,     "description": "Попробовать безлимит на 7 дней"},
     "1month":  {"title": "⭐ Premium на 1 месяц",    "price": 75,  "days": 30,    "description": "Безлимит запросов, история 50 сообщений"},
@@ -70,6 +74,65 @@ ACHIEVEMENTS = {
     "gift_3":         {"icon": "💝", "name": "Щедрая душа",          "desc": "Подарил 3 Premium"},
     "gift_10":        {"icon": "👑", "name": "Меценат",              "desc": "Подарил 10 Premium"},
     "gift_25":        {"icon": "💎", "name": "Санта",                "desc": "Подарил 25 Premium"},
+    "referral_first": {"icon": "👥", "name": "Первый друг",          "desc": "Пригласил 1 друга"},
+    "referral_5":     {"icon": "👨‍👩‍👦", "name": "Компания",           "desc": "Пригласил 5 друзей"},
+    "referral_25":    {"icon": "👑", "name": "Король рефералов",     "desc": "Пригласил 25 друзей"},
+}
+
+# Стрик-награды (вехи)
+STREAK_REWARDS = {
+    7:   1,     # 7 дней → Premium на 1 день
+    14:  3,     # 14 дней → Premium на 3 дня
+    30:  7,     # 30 дней → Premium на 7 дней
+    60:  15,    # 60 дней → Premium на 15 дней
+    100: 30,    # 100 дней → Premium на 30 дней
+    365: 36500, # 365 дней → Premium навсегда
+}
+
+# Режимы AI
+AI_MODES = {
+    "teacher": {
+        "icon": "🎓",
+        "name": "Учитель",
+        "desc": "Объясняет шаг за шагом, как преподаватель",
+        "premium": False,
+        "prompt": (
+            "Ты — logiMind, учитель. Объясняй пошагово, как преподаватель. "
+            "Отвечай понятно, дружелюбно. Если это домашка — веди юзера к ответу, "
+            "показывай шаги решения. Пиши структурированно."
+        )
+    },
+    "fast": {
+        "icon": "🚀",
+        "name": "Быстро",
+        "desc": "Короткий ответ, без воды",
+        "premium": False,
+        "prompt": (
+            "Ты — logiMind. Отвечай коротко и по делу. Минимум слов, "
+            "только суть. Без длинных объяснений."
+        )
+    },
+    "detailed": {
+        "icon": "🧠",
+        "name": "Подробно",
+        "desc": "Полное решение с объяснениями",
+        "premium": True,
+        "prompt": (
+            "Ты — logiMind. Давай максимально подробный ответ. "
+            "Объясняй каждую часть, показывай примеры, разбирай варианты. "
+            "Отвечай как для студента."
+        )
+    },
+    "simple": {
+        "icon": "💡",
+        "name": "Просто",
+        "desc": "Как 5-летнему, на пальцах",
+        "premium": True,
+        "prompt": (
+            "Ты — logiMind. Объясняй очень просто, как будто юзеру 5 лет. "
+            "Используй простые слова, аналогии, примеры из жизни."
+        )
+    },
 }
 
 DB_PATH = "data/users.db"
@@ -93,7 +156,12 @@ def init_db():
             premium_until TEXT,
             bonus_streak INTEGER DEFAULT 0,
             last_bonus_date TEXT,
-            achievements TEXT DEFAULT '[]'
+            achievements TEXT DEFAULT '[]',
+            ai_mode TEXT DEFAULT 'teacher',
+            referral_code TEXT,
+            referred_by INTEGER,
+            referrals_count INTEGER DEFAULT 0,
+            streak_rewards_claimed TEXT DEFAULT '[]'
         )
     """)
     cursor.execute("""
@@ -106,6 +174,43 @@ def init_db():
             created_at TEXT
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS promos (
+            code TEXT PRIMARY KEY,
+            promo_type TEXT,
+            value INTEGER,
+            max_uses INTEGER DEFAULT 0,
+            used_count INTEGER DEFAULT 0,
+            expires_at TEXT,
+            created_at TEXT,
+            created_by INTEGER
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS promo_uses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT,
+            user_id INTEGER,
+            used_at TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            title TEXT,
+            link TEXT,
+            description TEXT,
+            total_views INTEGER,
+            current_views INTEGER DEFAULT 0,
+            package TEXT,
+            price INTEGER,
+            status TEXT DEFAULT 'active',
+            created_at TEXT
+        )
+    """)
+
+    # Миграция существующих пользователей
     cursor.execute("PRAGMA table_info(users)")
     columns = [c[1] for c in cursor.fetchall()]
     if "bonus_streak" not in columns:
@@ -114,6 +219,17 @@ def init_db():
         cursor.execute("ALTER TABLE users ADD COLUMN last_bonus_date TEXT")
     if "achievements" not in columns:
         cursor.execute("ALTER TABLE users ADD COLUMN achievements TEXT DEFAULT '[]'")
+    if "ai_mode" not in columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN ai_mode TEXT DEFAULT 'teacher'")
+    if "referral_code" not in columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN referral_code TEXT")
+    if "referred_by" not in columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN referred_by INTEGER")
+    if "referrals_count" not in columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN referrals_count INTEGER DEFAULT 0")
+    if "streak_rewards_claimed" not in columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN streak_rewards_claimed TEXT DEFAULT '[]'")
+
     conn.commit()
     conn.close()
     logger.info("БД инициализирована")
@@ -134,7 +250,12 @@ def get_user(user_id):
         "total_requests": row[7], "is_premium": bool(row[8]), "premium_until": row[9],
         "bonus_streak": row[10] if len(row) > 10 else 0,
         "last_bonus_date": row[11] if len(row) > 11 else None,
-        "achievements": json.loads(row[12]) if len(row) > 12 and row[12] else []
+        "achievements": json.loads(row[12]) if len(row) > 12 and row[12] else [],
+        "ai_mode": row[13] if len(row) > 13 and row[13] else "teacher",
+        "referral_code": row[14] if len(row) > 14 else None,
+        "referred_by": row[15] if len(row) > 15 else None,
+        "referrals_count": row[16] if len(row) > 16 and row[16] else 0,
+        "streak_rewards_claimed": json.loads(row[17]) if len(row) > 17 and row[17] else []
     }
 
 
@@ -153,20 +274,26 @@ def get_effective_limit(user):
     return base + bonus
 
 
+def generate_referral_code(user_id):
+    return f"ref{user_id}"
+
+
 def create_or_update_user(user_id, username, first_name):
     today = date.today().isoformat()
     now = datetime.now().isoformat()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, last_reset_date FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT user_id, last_reset_date, referral_code FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     if row is None:
+        ref_code = generate_referral_code(user_id)
         cursor.execute("""
             INSERT INTO users (user_id, username, first_name, registered_at, last_seen,
                                requests_today, last_reset_date, total_requests, is_premium,
-                               bonus_streak, last_bonus_date, achievements)
-            VALUES (?, ?, ?, ?, ?, 0, ?, 0, 0, 0, NULL, '[]')
-        """, (user_id, username, first_name, now, now, today))
+                               bonus_streak, last_bonus_date, achievements, ai_mode,
+                               referral_code, referrals_count, streak_rewards_claimed)
+            VALUES (?, ?, ?, ?, ?, 0, ?, 0, 0, 0, NULL, '[]', 'teacher', ?, 0, '[]')
+        """, (user_id, username, first_name, now, now, today, ref_code))
     else:
         if row[1] != today:
             cursor.execute("""
@@ -178,6 +305,10 @@ def create_or_update_user(user_id, username, first_name):
                 UPDATE users SET last_seen = ?, username = ?, first_name = ?
                 WHERE user_id = ?
             """, (now, username, first_name, user_id))
+        # Если нет referral_code — добавим
+        if not row[2]:
+            cursor.execute("UPDATE users SET referral_code = ? WHERE user_id = ?",
+                           (generate_referral_code(user_id), user_id))
     conn.commit()
     conn.close()
 
@@ -220,6 +351,15 @@ def check_and_increment_limit(user_id):
     new_count = cursor.fetchone()[0]
     conn.close()
     return True, effective_limit - new_count, effective_limit
+
+
+def add_extra_requests(user_id, count):
+    """Добавляет юзеру дополнительные запросы (уменьшает счётчик)."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET requests_today = MAX(0, requests_today - ?) WHERE user_id = ?", (count, user_id))
+    conn.commit()
+    conn.close()
 
 
 def activate_premium(user_id, days):
@@ -276,6 +416,37 @@ def claim_daily_bonus(user_id):
     return True, "ok", new_streak
 
 
+def check_streak_rewards(user_id):
+    """Проверяет и выдаёт награды за стрик. Возвращает список выданных наград."""
+    user = get_user(user_id)
+    if not user:
+        return []
+    streak = user.get("bonus_streak", 0) or 0
+    claimed = user.get("streak_rewards_claimed", [])
+    new_rewards = []
+
+    for milestone, days in sorted(STREAK_REWARDS.items()):
+        if streak >= milestone and str(milestone) not in claimed:
+            # Выдаём награду
+            until = activate_premium(user_id, days)
+            claimed.append(str(milestone))
+            new_rewards.append({
+                "milestone": milestone,
+                "days": days,
+                "until": until
+            })
+
+    if new_rewards:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET streak_rewards_claimed = ? WHERE user_id = ?",
+                       (json.dumps(claimed), user_id))
+        conn.commit()
+        conn.close()
+
+    return new_rewards
+
+
 def add_achievement(user_id, key):
     if key not in ACHIEVEMENTS:
         return False
@@ -312,6 +483,11 @@ def check_achievements(user_id):
     if is_premium_active(user):
         if add_achievement(user_id, "premium"):
             new.append("premium")
+    refs = user.get("referrals_count", 0) or 0
+    for t, k in [(1, "referral_first"), (5, "referral_5"), (25, "referral_25")]:
+        if refs >= t:
+            if add_achievement(user_id, k):
+                new.append(k)
     return new
 
 
@@ -355,6 +531,15 @@ def get_top_streaks(limit=10):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT user_id, first_name, username, bonus_streak, is_premium, premium_until FROM users WHERE bonus_streak > 0 ORDER BY bonus_streak DESC LIMIT ?", (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def get_top_referrals(limit=10):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, first_name, username, referrals_count, is_premium, premium_until FROM users WHERE referrals_count > 0 ORDER BY referrals_count DESC LIMIT ?", (limit,))
     rows = cursor.fetchall()
     conn.close()
     return rows
@@ -420,6 +605,17 @@ def set_streak_admin(user_id, streak):
     conn.close()
 
 
+def set_ai_mode(user_id, mode):
+    if mode not in AI_MODES:
+        return False
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET ai_mode = ? WHERE user_id = ?", (mode, user_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
 def create_gift(from_user_id, to_user_id, plan_key, price):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -465,6 +661,198 @@ def check_gift_achievements(user_id):
     return new
 
 
+# ============ РЕФЕРАЛКА ============
+def process_referral(new_user_id, ref_code):
+    """Обрабатывает реферальный код. Возвращает (owner_id, owner_bonus, friend_bonus)."""
+    if not ref_code:
+        return None, 0, 0
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE referral_code = ?", (ref_code,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return None, 0, 0
+    owner_id = row[0]
+    if owner_id == new_user_id:
+        conn.close()
+        return None, 0, 0  # Нельзя пригласить самого себя
+    cursor.execute("SELECT referred_by FROM users WHERE user_id = ?", (new_user_id,))
+    existing = cursor.fetchone()
+    if existing and existing[0]:
+        conn.close()
+        return None, 0, 0  # Уже был приглашён
+    # Обновляем
+    cursor.execute("UPDATE users SET referred_by = ? WHERE user_id = ?", (owner_id, new_user_id))
+    cursor.execute("UPDATE users SET referrals_count = referrals_count + 1 WHERE user_id = ?", (owner_id,))
+    conn.commit()
+    conn.close()
+    # Начисляем бонусы (запросы)
+    add_extra_requests(owner_id, REFERRAL_BONUS_OWNER)
+    add_extra_requests(new_user_id, REFERRAL_BONUS_FRIEND)
+    # Проверка ачивок
+    check_achievements(owner_id)
+    return owner_id, REFERRAL_BONUS_OWNER, REFERRAL_BONUS_FRIEND
+
+
+# ============ ПРОМОКОДЫ ============
+def create_promo(code, promo_type, value, max_uses=0, days_valid=0, created_by=None):
+    """Создаёт промокод. promo_type: premium / requests / streak"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    expires_at = None
+    if days_valid > 0:
+        expires_at = (datetime.now() + timedelta(days=days_valid)).isoformat()
+    try:
+        cursor.execute("""
+            INSERT INTO promos (code, promo_type, value, max_uses, used_count, expires_at, created_at, created_by)
+            VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+        """, (code.upper(), promo_type, value, max_uses, expires_at, datetime.now().isoformat(), created_by))
+        conn.commit()
+        ok = True
+    except sqlite3.IntegrityError:
+        ok = False
+    conn.close()
+    return ok
+
+
+def get_promo(code):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM promos WHERE code = ?", (code.upper(),))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "code": row[0], "promo_type": row[1], "value": row[2],
+        "max_uses": row[3], "used_count": row[4],
+        "expires_at": row[5], "created_at": row[6], "created_by": row[7]
+    }
+
+
+def use_promo(user_id, code):
+    """Активирует промокод. Возвращает (ok, result_dict, error_message)."""
+    promo = get_promo(code)
+    if not promo:
+        return False, None, "not_found"
+    # Проверка срока
+    if promo["expires_at"]:
+        try:
+            if datetime.fromisoformat(promo["expires_at"]) < datetime.now():
+                return False, None, "expired"
+        except Exception:
+            pass
+    # Проверка лимита
+    if promo["max_uses"] > 0 and promo["used_count"] >= promo["max_uses"]:
+        return False, None, "limit_reached"
+    # Проверка: юзер уже использовал?
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM promo_uses WHERE code = ? AND user_id = ?", (promo["code"], user_id))
+    if cursor.fetchone():
+        conn.close()
+        return False, None, "already_used"
+    # Активируем
+    cursor.execute("INSERT INTO promo_uses (code, user_id, used_at) VALUES (?, ?, ?)",
+                   (promo["code"], user_id, datetime.now().isoformat()))
+    cursor.execute("UPDATE promos SET used_count = used_count + 1 WHERE code = ?", (promo["code"],))
+    conn.commit()
+    conn.close()
+    # Выдаём награду
+    result = {"type": promo["promo_type"], "value": promo["value"]}
+    if promo["promo_type"] == "premium":
+        until = activate_premium(user_id, promo["value"])
+        result["until"] = until
+        add_achievement(user_id, "premium")
+    elif promo["promo_type"] == "requests":
+        add_extra_requests(user_id, promo["value"])
+    elif promo["promo_type"] == "streak":
+        user = get_user(user_id)
+        if user:
+            new_streak = (user.get("bonus_streak", 0) or 0) + promo["value"]
+            set_streak_admin(user_id, new_streak)
+            result["new_streak"] = new_streak
+            check_achievements(user_id)
+    return True, result, None
+
+
+def delete_promo(code):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM promos WHERE code = ?", (code.upper(),))
+    conn.commit()
+    conn.close()
+
+
+def list_promos():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM promos ORDER BY created_at DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def get_user_promo_history(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT code, used_at FROM promo_uses WHERE user_id = ? ORDER BY used_at DESC LIMIT 20", (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+# ============ РЕКЛАМА (базовая — только твоя) ============
+def add_ad(user_id, title, link, description, total_views, package="custom", price=0):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO ads (user_id, title, link, description, total_views, package, price, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)
+    """, (user_id, title, link, description, total_views, package, price, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def get_active_ads():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM ads WHERE status = 'active' AND current_views < total_views ORDER BY id")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def increment_ad_view(ad_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE ads SET current_views = current_views + 1 WHERE id = ?", (ad_id,))
+    cursor.execute("SELECT current_views, total_views FROM ads WHERE id = ?", (ad_id,))
+    row = cursor.fetchone()
+    if row and row[0] >= row[1]:
+        cursor.execute("UPDATE ads SET status = 'finished' WHERE id = ?", (ad_id,))
+    conn.commit()
+    conn.close()
+
+
+def list_ads():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM ads ORDER BY id DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def delete_ad(ad_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM ads WHERE id = ?", (ad_id,))
+    conn.commit()
+    conn.close()
+
+
 pending_states = {}
 
 
@@ -477,10 +865,6 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL_TEXT = "openai/gpt-oss-120b"
 GROQ_MODEL_VISION = "qwen/qwen3.8-27b"
 
-SYSTEM_PROMPT = (
-    "Ты — logiMind, умный помощник по учёбе. Отвечай понятно, дружелюбно, "
-    "на русском или украинском. Если это домашка — объясняй шаги решения."
-)
 SYSTEM_PROMPT_VISION = (
     "Ты — logiMind, помощник по учёбе. Пользователь прислал фото задания. "
     "Прочитай текст, пойми задачу и помоги решить. Отвечай на языке задания."
@@ -505,9 +889,18 @@ def add_to_history(user_id, role, content, is_premium=False):
         user_histories[user_id] = history[-max_hist * 2:]
 
 
-async def ask_ai(user_id: int, user_message: str, is_premium: bool = False) -> str:
+def get_mode_prompt(mode_key):
+    """Возвращает SYSTEM_PROMPT для режима."""
+    mode = AI_MODES.get(mode_key)
+    if not mode:
+        mode = AI_MODES["teacher"]
+    return mode["prompt"]
+
+
+async def ask_ai(user_id: int, user_message: str, is_premium: bool = False, mode_key: str = "teacher") -> str:
     add_to_history(user_id, "user", user_message, is_premium)
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + get_history(user_id)
+    system_prompt = get_mode_prompt(mode_key)
+    messages = [{"role": "system", "content": system_prompt}] + get_history(user_id)
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {"model": GROQ_MODEL_TEXT, "messages": messages, "temperature": 0.7, "max_tokens": 1500}
     try:
@@ -614,6 +1007,14 @@ def make_progress_bar(value, maximum, length=10):
     return "█" * filled + "░" * (length - filled)
 
 
+def get_next_streak_reward(streak, claimed):
+    """Возвращает следующую награду: (milestone, days) или None."""
+    for milestone, days in sorted(STREAK_REWARDS.items()):
+        if streak < milestone and str(milestone) not in claimed:
+            return milestone, days
+    return None
+
+
 # ============ МЕНЮ ============
 def get_main_menu(user_id=None):
     if user_id == OWNER_ID:
@@ -622,6 +1023,7 @@ def get_main_menu(user_id=None):
                 [KeyboardButton(text="🤖 Спросить AI"), KeyboardButton(text="🎁 Бонус")],
                 [KeyboardButton(text="📚 Помощь с ДЗ"), KeyboardButton(text="👤 Профиль")],
                 [KeyboardButton(text="🥇 Топ"), KeyboardButton(text="🔥 Стрики"), KeyboardButton(text="⭐ Premium")],
+                [KeyboardButton(text="⚙️ Режим AI"), KeyboardButton(text="👥 Пригласить")],
                 [KeyboardButton(text="👑 БОСС-ПАНЕЛЬ"), KeyboardButton(text="❓ Помощь")]
             ],
             resize_keyboard=True,
@@ -632,6 +1034,7 @@ def get_main_menu(user_id=None):
             [KeyboardButton(text="🤖 Спросить AI"), KeyboardButton(text="🎁 Бонус")],
             [KeyboardButton(text="📚 Помощь с ДЗ"), KeyboardButton(text="👤 Профиль")],
             [KeyboardButton(text="🥇 Топ"), KeyboardButton(text="🔥 Стрики"), KeyboardButton(text="⭐ Premium")],
+            [KeyboardButton(text="⚙️ Режим AI"), KeyboardButton(text="👥 Пригласить")],
             [KeyboardButton(text="❓ Помощь")]
         ],
         resize_keyboard=True,
@@ -661,6 +1064,20 @@ def get_gift_plans_keyboard():
         [InlineKeyboardButton(text="🎁 Навсегда — 900 звёзд 👑", callback_data="giftbuy_forever")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="gift_cancel")],
     ])
+
+
+def get_ai_modes_keyboard(current_mode="teacher"):
+    buttons = []
+    for key, mode in AI_MODES.items():
+        icon = mode["icon"]
+        name = mode["name"]
+        lock = "" if not mode["premium"] else " ⭐"
+        check = " ✅" if key == current_mode else ""
+        buttons.append([InlineKeyboardButton(
+            text=f"{icon} {name}{lock}{check}",
+            callback_data=f"setmode_{key}"
+        )])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 # ============ АЧИВКИ (показ) ============
@@ -706,6 +1123,26 @@ async def notify_new_achievements(message: Message, new_achievements):
         )
 
 
+async def notify_streak_rewards(message: Message, rewards):
+    """Уведомляет о наградах за стрик."""
+    if not rewards:
+        return
+    for r in rewards:
+        milestone = r["milestone"]
+        days = r["days"]
+        until = r["until"]
+        if days >= 36500:
+            until_text = "навсегда"
+        else:
+            until_text = f"до {until.strftime('%d.%m.%Y')}"
+        await message.answer(
+            f"🏆 <b>НАГРАДА ЗА СТРИК!</b>\n\n"
+            f"🔥 {milestone} дней подряд!\n\n"
+            f"⭐ <b>Premium активирован</b> {until_text}\n\n"
+            f"Спасибо что с нами! Продолжай в том же духе 🚀"
+        )
+
+
 # ============ ТОП ============
 def build_top_text(today=False):
     rows = get_top_users(limit=10, today=today)
@@ -746,10 +1183,27 @@ def build_streaks_text():
     return text
 
 
+def build_referrals_text():
+    rows = get_top_referrals(limit=10)
+    medals = ["🥇", "🥈", "🥉"]
+    header = "👥 <b>ТОП-10 ПО РЕФЕРАЛАМ</b>\n💎 Кто больше всех привёл друзей\n\n"
+    if not rows:
+        return header + "<i>Пока никого нет. Пригласи друга — и будь первым! 🚀</i>"
+    text = header
+    for i, (uid, first_name, username, refs, is_prem, until) in enumerate(rows, 1):
+        medal = medals[i-1] if i <= 3 else f"{i}."
+        name = first_name or "Аноним"
+        prem_icon = get_premium_icon(is_prem, until)
+        text += f"{medal} <b>{name}</b>{prem_icon} — {refs} друзей\n"
+    text += "\n<i>Приглашай друзей — и поднимайся в топ! 👥</i>"
+    return text
+
+
 def get_streaks_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Топ запросов", callback_data="top_all_time")],
         [InlineKeyboardButton(text="👤 Моё место в стриках", callback_data="my_streak")],
+        [InlineKeyboardButton(text="👥 Топ по рефералам", callback_data="top_refs")],
     ])
 
 
@@ -762,6 +1216,7 @@ def get_top_keyboard(today=False):
         [InlineKeyboardButton(text="📍 Моё место", callback_data=my_cb),
          InlineKeyboardButton(text=toggle_text, callback_data=toggle_cb)],
         [InlineKeyboardButton(text="🔥 Топ по стрикам", callback_data="top_streaks")],
+        [InlineKeyboardButton(text="👥 Топ по рефералам", callback_data="top_refs")],
     ])
 
 
@@ -784,6 +1239,13 @@ async def cmd_top_today(message: Message):
 async def cmd_top_streaks(message: Message):
     create_or_update_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     text = build_streaks_text()
+    await message.answer(text, reply_markup=get_streaks_keyboard())
+
+
+@dp.message(Command("top_refs"))
+async def cmd_top_refs(message: Message):
+    create_or_update_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
+    text = build_referrals_text()
     await message.answer(text, reply_markup=get_streaks_keyboard())
 
 
@@ -817,6 +1279,16 @@ async def cb_top_streaks(callback: CallbackQuery):
     await callback.answer()
 
 
+@dp.callback_query(F.data == "top_refs")
+async def cb_top_refs(callback: CallbackQuery):
+    text = build_referrals_text()
+    try:
+        await callback.message.edit_text(text, reply_markup=get_streaks_keyboard())
+    except Exception:
+        await callback.message.answer(text, reply_markup=get_streaks_keyboard())
+    await callback.answer()
+
+
 @dp.callback_query(F.data == "my_streak")
 async def cb_my_streak(callback: CallbackQuery):
     u = get_user(callback.from_user.id)
@@ -825,14 +1297,25 @@ async def cb_my_streak(callback: CallbackQuery):
         return
     streak = u.get("bonus_streak", 0) or 0
     fire = streak_fire(streak)
+    claimed = u.get("streak_rewards_claimed", [])
+    next_reward = get_next_streak_reward(streak, claimed)
+
     if streak == 0:
         msg = "🔥 <b>У тебя ещё нет стрика</b>\n\nНачни заходить каждый день и получишь бонус!"
     else:
         msg = (
             f"🔥 <b>Твой стрик:</b> {streak} дней{fire}\n\n"
             f"📊 Бонус к лимиту: <b>+{min(streak, MAX_BONUS_DAYS)}</b>\n"
-            f"🎯 Твой лимит сегодня: <b>{get_effective_limit(u)}</b> запросов"
+            f"🎯 Твой лимит сегодня: <b>{get_effective_limit(u)}</b> запросов\n"
         )
+        if next_reward:
+            milestone, days = next_reward
+            remaining = milestone - streak
+            msg += (
+                f"\n🏆 <b>Следующая награда:</b>\n"
+                f"📅 Через {remaining} дней стрик {milestone}\n"
+                f"⭐ Premium на {days if days < 36500 else 'навсегда'} дн."
+            )
     await callback.answer()
     await callback.message.answer(msg)
 
@@ -880,6 +1363,32 @@ async def cb_my_rank_today(callback: CallbackQuery):
 async def cmd_start(message: Message):
     user = message.from_user
     create_or_update_user(user.id, user.username, user.first_name)
+
+    # Обработка реферальной ссылки
+    args = message.text.split()
+    if len(args) > 1:
+        ref_code = args[1]
+        # Обрабатываем только если юзер новый (referred_by = NULL)
+        u = get_user(user.id)
+        if u and not u.get("referred_by"):
+            owner_id, owner_bonus, friend_bonus = process_referral(user.id, ref_code)
+            if owner_id:
+                await message.answer(
+                    f"🎁 <b>Ты пришёл по ссылке друга!</b>\n\n"
+                    f"✅ Тебе +{friend_bonus} запросов\n"
+                    f"✅ Твоему другу +{owner_bonus} запросов\n\n"
+                    f"<i>Хочешь тоже приглашать? Кнопка «👥 Пригласить» в меню!</i>"
+                )
+                try:
+                    await bot.send_message(
+                        owner_id,
+                        f"🎉 <b>По твоей ссылке пришёл друг!</b>\n\n"
+                        f"✅ Тебе +{owner_bonus} запросов\n\n"
+                        f"<i>Продолжай приглашать — за 5 друзей дам ачивку!</i>"
+                    )
+                except Exception:
+                    pass
+
     user_name = user.first_name or "друг"
     if user.id == OWNER_ID:
         text = (
@@ -900,7 +1409,8 @@ async def cmd_start(message: Message):
             f"💬 Отвечаю на любые вопросы\n\n"
             f"🎁 Бесплатно: <b>{FREE_DAILY_LIMIT} запросов в день</b>\n"
             f"🎁 Ежедневный бонус: <b>+1 к лимиту за день подряд</b>\n"
-            f"🏆 Ачивки за достижения\n"
+            f"🏆 Premium за стрик (7, 14, 30, 60, 100, 365 дней)\n"
+            f"👥 Приглашай друзей — получай бонусы\n"
             f"⭐ Premium: <b>безлимит</b>\n\n"
             f"<b>Напиши вопрос или пришли фото задания 👇</b>"
         )
@@ -924,9 +1434,13 @@ async def cmd_help(message: Message):
         "/achivements — мои ачивки 🏆\n"
         "/bonus — получить бонус 🎁\n"
         "/premium — купить Premium ⭐\n"
+        "/mode — режимы AI ⚙️\n"
+        "/invite — пригласить друга 👥\n"
+        "/promo — ввести промокод 🎫\n"
         "/top — топ юзеров 🏆\n"
         "/top_today — топ за сегодня 🔥\n"
         "/top_streaks — топ по стрикам 🔥🔥\n"
+        "/top_refs — топ по рефералам 👥\n"
         "/reset — сбросить диалог\n"
         "/cancel — отменить действие\n\n"
         f"<b>Лимит:</b> {FREE_DAILY_LIMIT} базовых + бонус за стрик (до +{MAX_BONUS_DAYS})"
@@ -962,6 +1476,7 @@ async def cmd_premium(message: Message):
         "✅ <b>Безлимит</b> запросов\n"
         "✅ История диалога <b>50 сообщений</b>\n"
         "✅ Значок ⭐ в профиле и топе\n"
+        "✅ <b>2 эксклюзивных режима AI</b> (🧠 Подробно, 💡 Просто)\n"
         "✅ Все будущие фичи бесплатно\n\n"
         "<b>Выбери тариф 👇</b>\n"
         "<i>Или подари Premium другу 🎁</i>"
@@ -980,6 +1495,147 @@ async def show_buy_menu_cb(callback: CallbackQuery):
     await callback.message.answer(text, reply_markup=get_premium_keyboard())
 
 
+# ============ РЕЖИМЫ AI ============
+@dp.message(Command("mode"))
+async def cmd_mode(message: Message):
+    user = get_user(message.from_user.id)
+    if not user:
+        await message.answer("Нажми /start сначала.")
+        return
+    current = user.get("ai_mode", "teacher")
+    text = (
+        "⚙️ <b>РЕЖИМЫ AI</b>\n\n"
+        "Выбери как AI будет отвечать на твои вопросы:\n\n"
+    )
+    for key, mode in AI_MODES.items():
+        lock = "⭐ " if mode["premium"] else ""
+        check = " ✅" if key == current else ""
+        text += f"{mode['icon']} <b>{mode['name']}</b>{check}\n"
+        text += f"<i>{lock}{mode['desc']}</i>\n\n"
+    text += "⭐ — только для Premium\n\n<b>Выбери режим 👇</b>"
+    await message.answer(text, reply_markup=get_ai_modes_keyboard(current))
+
+
+@dp.callback_query(F.data.startswith("setmode_"))
+async def cb_set_mode(callback: CallbackQuery):
+    mode_key = callback.data.replace("setmode_", "")
+    if mode_key not in AI_MODES:
+        await callback.answer("Ошибка режима", show_alert=True)
+        return
+    user = get_user(callback.from_user.id)
+    if not user:
+        await callback.answer("Нажми /start", show_alert=True)
+        return
+    mode = AI_MODES[mode_key]
+    # Проверка Premium для премиум-режимов
+    if mode["premium"] and not is_premium_active(user):
+        await callback.answer("⭐ Этот режим только для Premium!", show_alert=True)
+        return
+    set_ai_mode(callback.from_user.id, mode_key)
+    await callback.answer(f"Режим: {mode['name']} ✅", show_alert=False)
+    text = (
+        f"✅ <b>Режим изменён</b>\n\n"
+        f"{mode['icon']} <b>{mode['name']}</b>\n"
+        f"<i>{mode['desc']}</i>\n\n"
+        f"Теперь AI отвечает в этом стиле."
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=get_ai_modes_keyboard(mode_key))
+    except Exception:
+        await callback.message.answer(text, reply_markup=get_ai_modes_keyboard(mode_key))
+
+
+# ============ РЕФЕРАЛКА ============
+@dp.message(Command("invite"))
+async def cmd_invite(message: Message):
+    user = get_user(message.from_user.id)
+    if not user:
+        await message.answer("Нажми /start сначала.")
+        return
+    ref_code = user.get("referral_code") or generate_referral_code(message.from_user.id)
+    bot_username = (await bot.get_me()).username
+    link = f"https://t.me/{bot_username}?start={ref_code}"
+    refs = user.get("referrals_count", 0) or 0
+
+    text = (
+        f"👥 <b>ПРИГЛАСИ ДРУЗЕЙ</b>\n\n"
+        f"🎁 <b>Что получаешь:</b>\n"
+        f"✅ +{REFERRAL_BONUS_OWNER} запросов за каждого друга\n"
+        f"✅ Ачивки за 1, 5, 25 друзей\n"
+        f"✅ Друг получает +{REFERRAL_BONUS_FRIEND} запросов\n\n"
+        f"📊 <b>Твоя статистика:</b>\n"
+        f"👥 Приглашено: <b>{refs}</b>\n\n"
+        f"🔗 <b>Твоя ссылка:</b>\n"
+        f"<code>{link}</code>\n\n"
+        f"<i>Нажми на ссылку чтобы скопировать</i>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 Поделиться", url=f"https://t.me/share/url?url={link}&text=Попробуй этого AI-помощника для учёбы!")]
+    ])
+    await message.answer(text, reply_markup=kb)
+
+
+# ============ ПРОМОКОДЫ ============
+@dp.message(Command("promo"))
+async def cmd_promo(message: Message):
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer(
+            "🎫 <b>Промокод</b>\n\n"
+            "Использование: <code>/promo КОД</code>\n\n"
+            "Пример: <code>/promo NEWYEAR</code>"
+        )
+        return
+    code = args[1]
+    ok, result, error = use_promo(message.from_user.id, code)
+
+    if not ok:
+        errors = {
+            "not_found": "❌ Промокод не найден",
+            "expired": "⏰ Промокод истёк",
+            "limit_reached": "📊 Лимит активаций исчерпан",
+            "already_used": "⚠️ Ты уже использовал этот промокод"
+        }
+        await message.answer(errors.get(error, "❌ Ошибка активации"))
+        return
+
+    # Успех
+    if result["type"] == "premium":
+        until = result["until"]
+        if result["value"] >= 36500:
+            until_text = "навсегда"
+        else:
+            until_text = f"до {until.strftime('%d.%m.%Y')}"
+        await message.answer(
+            f"🎫 <b>ПРОМОКОД АКТИВИРОВАН!</b>\n\n"
+            f"⭐ Premium {until_text}"
+        )
+    elif result["type"] == "requests":
+        await message.answer(
+            f"🎫 <b>ПРОМОКОД АКТИВИРОВАН!</b>\n\n"
+            f"💎 +{result['value']} запросов"
+        )
+    elif result["type"] == "streak":
+        await message.answer(
+            f"🎫 <b>ПРОМОКОД АКТИВИРОВАН!</b>\n\n"
+            f"🔥 +{result['value']} к стрику\n"
+            f"📊 Новый стрик: {result.get('new_streak', 0)}"
+        )
+
+
+@dp.message(Command("my_promos"))
+async def cmd_my_promos(message: Message):
+    rows = get_user_promo_history(message.from_user.id)
+    if not rows:
+        await message.answer("🎫 Ты ещё не активировал промокоды.")
+        return
+    text = "🎫 <b>МОИ ПРОМОКОДЫ</b>\n\n"
+    for code, used_at in rows:
+        date = used_at[:10]
+        text += f"✅ <code>{code}</code> — {date}\n"
+    await message.answer(text)
+
+
 # ============ /profile ============
 @dp.message(Command("profile"))
 async def cmd_profile(message: Message):
@@ -988,12 +1644,17 @@ async def cmd_profile(message: Message):
     if not user:
         await message.answer("Нажми /start сначала.")
         return
+
     premium_active = is_premium_active(user)
     premium_badge = " ⭐" if premium_active else ""
     rank_data = get_user_rank(user_id, today=False)
     ach_label = ""
     if rank_data and rank_data['total'] > 0 and user['total_requests'] > 0:
         ach_label = get_achievement_label(rank_data['rank'], rank_data['total'])
+
+    mode_key = user.get("ai_mode", "teacher")
+    mode = AI_MODES.get(mode_key, AI_MODES["teacher"])
+
     if premium_active:
         until = datetime.fromisoformat(user["premium_until"])
         limit_block = "⭐ <b>Premium навсегда</b> 🎉" if until.year >= 2100 else f"⭐ <b>Premium</b> до {until.strftime('%d.%m.%Y')} 🎉"
@@ -1015,18 +1676,38 @@ async def cmd_profile(message: Message):
             limit_block += f"⚠️ <b>Осталось: {remaining}</b>"
         else:
             limit_block += f"✅ <b>Осталось: {remaining}</b>"
+
     ach_count = len(user["achievements"])
     ach_total = len(ACHIEVEMENTS)
     gifts_count = count_gifts_from(user_id)
+    refs = user.get("referrals_count", 0) or 0
+
+    # Инфо о следующей награде за стрик
+    streak = user.get("bonus_streak", 0) or 0
+    claimed = user.get("streak_rewards_claimed", [])
+    next_reward = get_next_streak_reward(streak, claimed)
+
     text = (
         f"👤 <b>Твой профиль</b>{premium_badge}\n\n"
         f"ID: <code>{user_id}</code>\n"
         f"Имя: {user['first_name']}\n"
         f"Premium: {'✅ Да' if premium_active else '❌ Нет'}\n"
+        f"⚙️ Режим AI: {mode['icon']} <b>{mode['name']}</b>\n"
     )
     if ach_label:
         text += f"{ach_label}\n"
-    text += f"\n{limit_block}\n\n🏆 Ачивки: <b>{ach_count}/{ach_total}</b>\n"
+    text += f"\n{limit_block}\n"
+
+    if next_reward:
+        milestone, days = next_reward
+        remaining_days = milestone - streak
+        days_text = "навсегда" if days >= 36500 else f"{days} дн."
+        text += f"\n🏆 До награды за {milestone} дней: <b>{remaining_days}</b> дн.\n⭐ Premium на {days_text}\n"
+
+    text += (
+        f"\n🏆 Ачивки: <b>{ach_count}/{ach_total}</b>\n"
+        f"👥 Приглашено друзей: <b>{refs}</b>\n"
+    )
     if gifts_count > 0:
         text += f"🎁 Подарено Premium: <b>{gifts_count}</b>\n"
     text += (
@@ -1034,6 +1715,7 @@ async def cmd_profile(message: Message):
         f"• Всего запросов: {user['total_requests']}\n"
         f"• С нами с: {user['registered_at'][:10]}"
     )
+
     buttons = []
     if not premium_active:
         buttons.append([InlineKeyboardButton(text="🎁 Получить бонус", callback_data="claim_bonus")])
@@ -1042,6 +1724,7 @@ async def cmd_profile(message: Message):
     else:
         buttons.append([InlineKeyboardButton(text="🏆 Мои ачивки", callback_data="show_ach")])
         buttons.append([InlineKeyboardButton(text="🎁 Подарить Premium", callback_data="gift_start")])
+
     await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
@@ -1067,7 +1750,6 @@ async def cmd_achivements(message: Message):
 @dp.message(Command("reset"))
 async def cmd_reset(message: Message):
     user_histories[message.from_user.id] = []
-    # На всякий случай чистим состояние ожидания подарка
     if message.from_user.id in pending_states:
         del pending_states[message.from_user.id]
     await message.answer("🗑 <b>Диалог очищен</b>\n\nНачинаем заново!", reply_markup=get_main_menu(message.from_user.id))
@@ -1117,6 +1799,7 @@ async def send_bonus_message(target, user_id, is_callback=False):
         else:
             await target.answer(msg)
         return
+
     user = get_user(user_id)
     new_limit = get_effective_limit(user)
     fire = streak_fire(streak)
@@ -1129,17 +1812,24 @@ async def send_bonus_message(target, user_id, is_callback=False):
         msg += "<i>Завтра зайдёшь — ещё +1 к лимиту!</i>"
     else:
         msg += f"<i>🏆 Стрик продолжает расти, но бонус максимум +{MAX_BONUS_DAYS}!</i>"
+
     new_ach = []
     if add_achievement(user_id, "first_bonus"):
         new_ach.append("first_bonus")
     new_ach += check_achievements(user_id)
+
+    # Проверка наград за стрик
+    streak_rewards = check_streak_rewards(user_id)
+
     if is_callback:
         await target.answer("Бонус получен! 🎁", show_alert=False)
         await target.message.answer(msg)
         await notify_new_achievements(target.message, new_ach)
+        await notify_streak_rewards(target.message, streak_rewards)
     else:
         await target.answer(msg)
         await notify_new_achievements(target, new_ach)
+        await notify_streak_rewards(target, streak_rewards)
 
 
 @dp.message(Command("bonus"))
@@ -1161,9 +1851,11 @@ async def check_limit_and_reply(message: Message) -> bool:
             f"Ты использовал все <b>{effective_limit}</b> запросов на сегодня.\n"
             f"Лимит обновится завтра в 00:00.\n\n"
             f"🎁 <b>Заходи каждый день</b> — и лимит растёт!\n"
+            f"👥 <b>Приглашай друзей</b> — получай запросы!\n"
             f"⭐ Или купи Premium — безлимит!",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🎁 Бонус", callback_data="claim_bonus")],
+                [InlineKeyboardButton(text="👥 Пригласить", callback_data="invite_friend")],
                 [InlineKeyboardButton(text="⭐ Купить Premium", callback_data="show_premium")],
             ])
         )
@@ -1171,6 +1863,12 @@ async def check_limit_and_reply(message: Message) -> bool:
     if remaining <= 3 and remaining > 0:
         await message.answer(f"💡 Осталось сегодня: <b>{remaining}</b>")
     return True
+
+
+@dp.callback_query(F.data == "invite_friend")
+async def cb_invite_friend(callback: CallbackQuery):
+    await callback.answer()
+    await cmd_invite(callback.message)
 
 
 # ============ ПОДАРКИ ============
@@ -1288,7 +1986,7 @@ async def handle_gift_username(message: Message, state: dict) -> bool:
 async def handle_photo(message: Message):
     user = message.from_user
     create_or_update_user(user.id, user.username, user.first_name)
-    # ⚠️ ВАЖНО: фото сбрасывает ожидание подарка
+    # Сброс ожидания подарка
     if message.from_user.id in pending_states:
         del pending_states[message.from_user.id]
     if not await check_limit_and_reply(message):
@@ -1323,25 +2021,25 @@ async def handle_text(message: Message):
     create_or_update_user(user.id, user.username, user.first_name)
     text = message.text.strip()
 
-    # Игнорируем команды — их обрабатывают свои хендлеры
+    # Игнорируем команды
     if text.startswith("/"):
         from aiogram.dispatcher.event.bases import SkipHandler
         raise SkipHandler()
 
-    # Кнопки меню ВСЕГДА сбрасывают ожидание подарка
+    # Кнопки меню сбрасывают ожидание подарка
     menu_buttons = [
         "🤖 Спросить AI", "🎁 Бонус", "📚 Помощь с ДЗ", "👤 Профиль",
-        "🥇 Топ", "🔥 Стрики", "⭐ Premium", "👑 БОСС-ПАНЕЛЬ", "❓ Помощь"
+        "🥇 Топ", "🔥 Стрики", "⭐ Premium", "⚙️ Режим AI", "👥 Пригласить",
+        "👑 БОСС-ПАНЕЛЬ", "❓ Помощь"
     ]
     if text in menu_buttons:
         if message.from_user.id in pending_states:
             del pending_states[message.from_user.id]
 
-    # Проверка ожидания @username для подарка
+    # Проверка ожидания @username
     if message.from_user.id in pending_states:
         state = pending_states[message.from_user.id]
         if state.get("action") == "gift_waiting_username":
-            # Если это НЕ username и НЕ ID — просто выходим из режима
             if not (text.startswith("@") or text.isdigit()):
                 del pending_states[message.from_user.id]
                 await message.answer(
@@ -1374,6 +2072,12 @@ async def handle_text(message: Message):
     elif text == "⭐ Premium":
         await cmd_premium(message)
         return
+    elif text == "⚙️ Режим AI":
+        await cmd_mode(message)
+        return
+    elif text == "👥 Пригласить":
+        await cmd_invite(message)
+        return
     elif text == "👑 БОСС-ПАНЕЛЬ":
         await cmd_boss(message)
         return
@@ -1388,15 +2092,20 @@ async def handle_text(message: Message):
         return
     if not await check_limit_and_reply(message):
         return
+
     user_data = get_user(user.id)
     is_prem = is_premium_active(user_data) if user_data else False
+    mode_key = user_data.get("ai_mode", "teacher") if user_data else "teacher"
+
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
-    answer = await ask_ai(user.id, text, is_prem)
+    answer = await ask_ai(user.id, text, is_prem, mode_key)
+
     if len(answer) <= 4000:
         await message.answer(answer)
     else:
         for i in range(0, len(answer), 4000):
             await message.answer(answer[i:i+4000])
+
     new_ach = check_achievements(user.id)
     await notify_new_achievements(message, new_ach)
 
@@ -1543,9 +2252,11 @@ def boss_keyboard():
         [InlineKeyboardButton(text="⭐ Premium", callback_data="b_premium"),
          InlineKeyboardButton(text="🔥 Стрики", callback_data="b_streaks")],
         [InlineKeyboardButton(text="🎁 Бонус", callback_data="b_bonus"),
-         InlineKeyboardButton(text="📢 Рассылка", callback_data="b_broadcast")],
+         InlineKeyboardButton(text="📢 Реклама", callback_data="b_ads")],
         [InlineKeyboardButton(text="🏆 Ачивки", callback_data="b_ach"),
          InlineKeyboardButton(text="💎 Топ юзеров", callback_data="b_top")],
+        [InlineKeyboardButton(text="🎫 Промокоды", callback_data="b_promos"),
+         InlineKeyboardButton(text="📖 Все команды", callback_data="b_all_cmds")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="b_close")],
     ])
 
@@ -1562,19 +2273,78 @@ def build_boss_panel_text():
         f"📊 Запросов сегодня: <b>{stats['today_requests']}</b>\n"
         f"📈 Запросов всего: <b>{stats['total_requests']}</b>\n\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>Команды:</b>\n"
+        f"<b>Быстрые команды:</b>\n"
         f"/users — список юзеров\n"
         f"/user 123 — инфо о юзере\n"
-        f"/give_premium 123 30 — выдать Premium\n"
-        f"/take_premium 123 — забрать Premium\n"
-        f"/give_streak 123 50 — установить стрик\n"
-        f"/take_streak 123 — обнулить стрик\n"
-        f"/give_ach 123 key — выдать ачивку\n"
-        f"/take_ach 123 key — забрать ачивку\n"
-        f"/reset_limit 123 — сбросить лимит\n"
-        f"/reset_bonus 123 — сбросить бонус\n"
-        f"/broadcast текст — рассылка\n"
-        f"/me — мой ID"
+        f"/give_premium 123 30\n"
+        f"/give_streak 123 50\n"
+        f"/give_ach 123 key\n"
+        f"/reset_limit 123\n"
+        f"/broadcast текст\n\n"
+        f"<i>Полный список: 📖 Все команды</i>"
+    )
+
+
+def build_all_commands_text():
+    return (
+        "📖 <b>ВСЕ КОМАНДЫ БОССА</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📊 <b>ОСНОВНЫЕ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/boss — БОСС-ПАНЕЛЬ\n"
+        "/me — мой ID\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "👥 <b>ЮЗЕРЫ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/users — список юзеров\n"
+        "/user &lt;id&gt; — инфо о юзере\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "⭐ <b>PREMIUM</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/give_premium &lt;id&gt; &lt;days&gt;\n"
+        "/take_premium &lt;id&gt;\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🔥 <b>СТРИКИ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/give_streak &lt;id&gt; &lt;value&gt;\n"
+        "/take_streak &lt;id&gt;\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🏆 <b>АЧИВКИ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/give_ach &lt;id&gt; &lt;key&gt;\n"
+        "/take_ach &lt;id&gt; &lt;key&gt;\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📊 <b>ЛИМИТЫ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/reset_limit &lt;id&gt;\n"
+        "/reset_bonus &lt;id&gt;\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🎫 <b>ПРОМОКОДЫ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/create_promo &lt;код&gt; &lt;тип&gt; &lt;значение&gt; [лимит] [дней]\n"
+        "  тип: premium / requests / streak\n"
+        "/promos — список промокодов\n"
+        "/promo_info &lt;код&gt; — инфо\n"
+        "/promo_delete &lt;код&gt; — удалить\n\n"
+        "Примеры:\n"
+        "<code>/create_promo NEWYEAR premium 30 100 7</code>\n"
+        "<code>/create_promo HAPPY requests 100 0 30</code>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📢 <b>РЕКЛАМА</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/add_my_ad &lt;название&gt; | &lt;ссылка&gt; | &lt;показов&gt;\n"
+        "/list_ads — список реклам\n"
+        "/ad_info &lt;id&gt; — инфо\n"
+        "/ad_pause &lt;id&gt; — пауза\n"
+        "/ad_resume &lt;id&gt; — снять паузу\n"
+        "/ad_delete &lt;id&gt; — удалить\n"
+        "/ad_stats — статистика\n\n"
+        "Пример:\n"
+        "<code>/add_my_ad Мой канал | t.me/mychannel | 5000</code>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📢 <b>ПРОЧЕЕ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "/broadcast &lt;текст&gt; — рассылка\n"
     )
 
 
@@ -1601,10 +2371,13 @@ async def cb_boss(callback: CallbackQuery):
         return
     if action == "b_users":
         await callback.answer()
-        await cmd_users(callback.message)
+        await show_users_list(callback.message)
     elif action == "b_stats":
         await callback.answer()
         await callback.message.answer(build_boss_panel_text(), reply_markup=boss_keyboard())
+    elif action == "b_all_cmds":
+        await callback.answer()
+        await callback.message.answer(build_all_commands_text())
     elif action == "b_ach":
         await callback.answer()
         text = "🏆 <b>Все ачивки и ключи:</b>\n\n"
@@ -1635,23 +2408,49 @@ async def cb_boss(callback: CallbackQuery):
             "/reset_bonus &lt;user_id&gt; — юзер сможет взять бонус заново\n\n"
             "Пример: <code>/reset_bonus 123456</code>"
         )
-    elif action == "b_broadcast":
+    elif action == "b_promos":
         await callback.answer()
         await callback.message.answer(
-            "📢 <b>Рассылка</b>\n\n"
-            "/broadcast &lt;текст&gt;\n\n"
-            "Пример: <code>/broadcast Привет всем!</code>"
+            "🎫 <b>Промокоды</b>\n\n"
+            "<b>Создать:</b>\n"
+            "/create_promo &lt;код&gt; &lt;тип&gt; &lt;значение&gt; [лимит] [дней]\n\n"
+            "<b>Типы:</b>\n"
+            "• premium — Premium на N дней\n"
+            "• requests — +N запросов\n"
+            "• streak — +N к стрику\n\n"
+            "<b>Примеры:</b>\n"
+            "<code>/create_promo NEWYEAR premium 30 100 7</code>\n"
+            "<code>/create_promo HAPPY requests 100 0 30</code>\n\n"
+            "<b>Управление:</b>\n"
+            "/promos — список\n"
+            "/promo_info &lt;код&gt;\n"
+            "/promo_delete &lt;код&gt;"
+        )
+    elif action == "b_ads":
+        await callback.answer()
+        await callback.message.answer(
+            "📢 <b>Реклама</b>\n\n"
+            "<b>Добавить свою рекламу:</b>\n"
+            "/add_my_ad &lt;название&gt; | &lt;ссылка&gt; | &lt;показов&gt;\n\n"
+            "<b>Пример:</b>\n"
+            "<code>/add_my_ad Мой канал | t.me/mychannel | 5000</code>\n\n"
+            "<b>Управление:</b>\n"
+            "/list_ads — список\n"
+            "/ad_info &lt;id&gt;\n"
+            "/ad_pause &lt;id&gt;\n"
+            "/ad_resume &lt;id&gt;\n"
+            "/ad_delete &lt;id&gt;\n"
+            "/ad_stats — статистика"
         )
     elif action == "b_top":
         await callback.answer()
-        await cmd_top(callback.message)
+        top_text = build_top_text(today=False)
+        top_kb = get_top_keyboard(today=False)
+        await callback.message.answer(top_text, reply_markup=top_kb)
 
 
-@dp.message(Command("users"))
-async def cmd_users(message: Message):
-    if message.from_user.id != OWNER_ID:
-        await message.answer("⛔ Нет доступа.")
-        return
+# ============ АДМИН-КОМАНДЫ ============
+async def show_users_list(message: Message):
     rows = get_recent_users(limit=20)
     if not rows:
         await message.answer("Пока никого нет.")
@@ -1663,6 +2462,14 @@ async def cmd_users(message: Message):
         fire = streak_fire(streak)
         text += f"{prem_icon}<code>{uid}</code> — {fname or 'Аноним'} ({total} зап.){fire}\n"
     await message.answer(text)
+
+
+@dp.message(Command("users"))
+async def cmd_users(message: Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ Нет доступа.")
+        return
+    await show_users_list(message)
 
 
 @dp.message(Command("user"))
@@ -1691,6 +2498,8 @@ async def cmd_user(message: Message):
         except Exception:
             pass
     gifts_count = count_gifts_from(target_id)
+    mode_key = u.get("ai_mode", "teacher")
+    mode = AI_MODES.get(mode_key, AI_MODES["teacher"])
     text = (
         f"👤 <b>Юзер {target_id}</b>\n\n"
         f"Имя: {u['first_name']}\n"
@@ -1698,10 +2507,12 @@ async def cmd_user(message: Message):
         f"Регистрация: {u['registered_at'][:10]}\n"
         f"Premium: {'✅ Да' if prem_active else '❌ Нет'}\n"
         f"Premium до: {until_str}\n"
+        f"Режим AI: {mode['icon']} {mode['name']}\n"
         f"Стрик: {u['bonus_streak']} {streak_fire(u['bonus_streak'])}\n"
         f"Запросов сегодня: {u['requests_today']}\n"
         f"Запросов всего: {u['total_requests']}\n"
         f"Ачивок: {len(u['achievements'])}\n"
+        f"Рефералов: {u.get('referrals_count', 0)}\n"
         f"Подарено Premium: {gifts_count}\n"
     )
     await message.answer(text)
@@ -1929,11 +2740,299 @@ async def cmd_me(message: Message):
     await message.answer(f"🆔 Твой ID: <code>{message.from_user.id}</code>")
 
 
+# ============ ПРОМОКОДЫ (команды админа) ============
+@dp.message(Command("create_promo"))
+async def cmd_create_promo(message: Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ Нет доступа.")
+        return
+    args = message.text.split()
+    if len(args) < 4:
+        await message.answer(
+            "📝 <b>Создание промокода</b>\n\n"
+            "Использование:\n"
+            "<code>/create_promo КОД ТИП ЗНАЧЕНИЕ [ЛИМИТ] [ДНЕЙ]</code>\n\n"
+            "<b>Типы:</b> premium / requests / streak\n\n"
+            "<b>Примеры:</b>\n"
+            "<code>/create_promo NEWYEAR premium 30 100 7</code>\n"
+            "<code>/create_promo HAPPY requests 100 0 30</code>"
+        )
+        return
+    code = args[1].upper()
+    promo_type = args[2].lower()
+    try:
+        value = int(args[3])
+    except ValueError:
+        await message.answer("❌ Значение должно быть числом.")
+        return
+    max_uses = 0
+    days_valid = 0
+    if len(args) >= 5:
+        try:
+            max_uses = int(args[4])
+        except ValueError:
+            pass
+    if len(args) >= 6:
+        try:
+            days_valid = int(args[5])
+        except ValueError:
+            pass
+
+    if promo_type not in ("premium", "requests", "streak"):
+        await message.answer("❌ Тип должен быть: premium / requests / streak")
+        return
+
+    ok = create_promo(code, promo_type, value, max_uses, days_valid, message.from_user.id)
+    if not ok:
+        await message.answer(f"❌ Промокод <code>{code}</code> уже существует.")
+        return
+
+    type_names = {"premium": "Premium", "requests": "запросов", "streak": "к стрику"}
+    info = (
+        f"✅ <b>Промокод создан!</b>\n\n"
+        f"🎫 Код: <code>{code}</code>\n"
+        f"📦 Тип: {type_names[promo_type]}\n"
+        f"🔢 Значение: {value}\n"
+    )
+    if max_uses > 0:
+        info += f"👥 Лимит: {max_uses} активаций\n"
+    else:
+        info += f"👥 Лимит: без ограничений\n"
+    if days_valid > 0:
+        info += f"📅 Действует: {days_valid} дней\n"
+    else:
+        info += f"📅 Действует: бессрочно\n"
+    await message.answer(info)
+
+
+@dp.message(Command("promos"))
+async def cmd_promos(message: Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ Нет доступа.")
+        return
+    rows = list_promos()
+    if not rows:
+        await message.answer("🎫 Промокодов нет.")
+        return
+    text = "🎫 <b>ВСЕ ПРОМОКОДЫ</b>\n\n"
+    for row in rows[:20]:
+        code, ptype, val, max_u, used, exp, created, _ = row
+        exp_str = "бессрочно"
+        if exp:
+            try:
+                exp_str = datetime.fromisoformat(exp).strftime('%d.%m.%Y')
+            except Exception:
+                pass
+        limit_str = f"{used}/{max_u}" if max_u > 0 else f"{used}"
+        text += f"<code>{code}</code> — {ptype} {val} — {limit_str} — до {exp_str}\n"
+    await message.answer(text)
+
+
+@dp.message(Command("promo_info"))
+async def cmd_promo_info(message: Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ Нет доступа.")
+        return
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Использование: <code>/promo_info КОД</code>")
+        return
+    promo = get_promo(args[1])
+    if not promo:
+        await message.answer("❌ Промокод не найден.")
+        return
+    exp_str = "бессрочно"
+    if promo["expires_at"]:
+        try:
+            exp_str = datetime.fromisoformat(promo["expires_at"]).strftime('%d.%m.%Y')
+        except Exception:
+            pass
+    limit_str = f"{promo['used_count']}/{promo['max_uses']}" if promo["max_uses"] > 0 else f"{promo['used_count']} (без лимита)"
+    text = (
+        f"🎫 <b>Промокод {promo['code']}</b>\n\n"
+        f"📦 Тип: {promo['promo_type']}\n"
+        f"🔢 Значение: {promo['value']}\n"
+        f"📊 Активаций: {limit_str}\n"
+        f"📅 До: {exp_str}\n"
+    )
+    await message.answer(text)
+
+
+@dp.message(Command("promo_delete"))
+async def cmd_promo_delete(message: Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ Нет доступа.")
+        return
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Использование: <code>/promo_delete КОД</code>")
+        return
+    delete_promo(args[1])
+    await message.answer(f"✅ Промокод <code>{args[1].upper()}</code> удалён")
+
+
+# ============ РЕКЛАМА (команды админа) ============
+@dp.message(Command("add_my_ad"))
+async def cmd_add_my_ad(message: Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ Нет доступа.")
+        return
+    text = message.text.replace("/add_my_ad", "", 1).strip()
+    parts = [p.strip() for p in text.split("|")]
+    if len(parts) != 3:
+        await message.answer(
+            "📝 <b>Добавление своей рекламы</b>\n\n"
+            "Использование:\n"
+            "<code>/add_my_ad Название | ссылка | показов</code>\n\n"
+            "Пример:\n"
+            "<code>/add_my_ad Мой канал | t.me/mychannel | 5000</code>"
+        )
+        return
+    title, link, views_str = parts
+    try:
+        total_views = int(views_str)
+    except ValueError:
+        await message.answer("❌ Показов должно быть число.")
+        return
+    add_ad(message.from_user.id, title, link, "", total_views, "custom", 0)
+    await message.answer(
+        f"✅ <b>Реклама добавлена!</b>\n\n"
+        f"📢 {title}\n"
+        f"🔗 {link}\n"
+        f"👁 Показов: {total_views}"
+    )
+
+
+@dp.message(Command("list_ads"))
+async def cmd_list_ads(message: Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ Нет доступа.")
+        return
+    rows = list_ads()
+    if not rows:
+        await message.answer("📢 Рекламы нет.")
+        return
+    text = "📢 <b>ВСЕ РЕКЛАМЫ</b>\n\n"
+    for row in rows[:20]:
+        ad_id, uid, title, link, desc, total, current, pkg, price, status, created = row
+        status_icon = {"active": "🟢", "paused": "⏸", "finished": "✅"}.get(status, "❓")
+        text += f"{status_icon} <b>#{ad_id}</b> {title}\n"
+        text += f"   👁 {current}/{total} — {status}\n\n"
+    await message.answer(text)
+
+
+@dp.message(Command("ad_info"))
+async def cmd_ad_info(message: Message):
+    if message.from_user.id != OWNER_ID:
+        await message.answer("⛔ Нет доступа.")
+        return
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Использование: <code>/ad_info ID</code>")
+        return
+    try:
+        ad_id = int(args[1])
+    except ValueError:
+        await message.answer("ID должен быть числом.")
+        return
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM ads WHERE id = ?", (ad_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        await message.answer("❌ Реклама не найдена.")
+        return
+    ad_id, uid, title, link, desc, total, current, pkg, price, status, created = row
+    text = (
+        f"📢 <b>Реклама #{ad_id}</b>\n\n"
+        f"📝 {title}\n"
+        f"🔗 {link}\n"
+        f"👁 Показов: {current}/{total}\n"
+        f"📊 Статус: {status}\n"
+        f"📅 Создано: {created[:10]}\n"
+    )
+    await message.answer(text)
+
+
+@dp.message(Command("ad_pause"))
+async def cmd_ad_pause(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Использование: <code>/ad_pause ID</code>")
+        return
+    try:
+        ad_id = int(args[1])
+    except ValueError:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE ads SET status = 'paused' WHERE id = ?", (ad_id,))
+    conn.commit()
+    conn.close()
+    await message.answer(f"⏸ Реклама #{ad_id} на паузе")
+
+
+@dp.message(Command("ad_resume"))
+async def cmd_ad_resume(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Использование: <code>/ad_resume ID</code>")
+        return
+    try:
+        ad_id = int(args[1])
+    except ValueError:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE ads SET status = 'active' WHERE id = ?", (ad_id,))
+    conn.commit()
+    conn.close()
+    await message.answer(f"▶️ Реклама #{ad_id} активна")
+
+
+@dp.message(Command("ad_delete"))
+async def cmd_ad_delete(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer("Использование: <code>/ad_delete ID</code>")
+        return
+    try:
+        ad_id = int(args[1])
+    except ValueError:
+        return
+    delete_ad(ad_id)
+    await message.answer(f"✅ Реклама #{ad_id} удалена")
+
+
+@dp.message(Command("ad_stats"))
+async def cmd_ad_stats(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    rows = list_ads()
+    active = sum(1 for r in rows if r[9] == "active")
+    finished = sum(1 for r in rows if r[9] == "finished")
+    total_views = sum(r[6] for r in rows)
+    text = (
+        f"📊 <b>Статистика рекламы</b>\n\n"
+        f"🟢 Активных: {active}\n"
+        f"✅ Завершённых: {finished}\n"
+        f"👁 Всего показов: {total_views}\n"
+    )
+    await message.answer(text)
+
+
 # ============ ЗАПУСК ============
 async def main():
     print("=" * 60)
-    print("🚀 logiMind БОСС-ВЕРСИЯ запускается...")
-    print("🎯 AI + Фото + Premium + Подарки + Ачивки + Стрики + БОСС-ПАНЕЛЬ")
+    print("🚀 logiMind БОСС-ВЕРСИЯ 2.0 запускается...")
+    print("🎯 AI + Premium + Стрик-награды + Рефералка + Режимы AI + Промокоды + Реклама")
     print("=" * 60)
     init_db()
     logger.info("Бот стартовал")
